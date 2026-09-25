@@ -1,53 +1,378 @@
-"""HF transformers adapter (stretch): ``tokenizer.parse_response`` and the
-streaming ``ResponseParser``, driven by the ``response_template`` a model repo
-ships in ``tokenizer_config.json``.
+"""HF transformers adapter: ``tokenizer.parse_response`` and the streaming
+``ResponseParser``, driven by the ``response_template`` that a model repo ships
+in its ``tokenizer_config.json``.
 
 Owner: transformers adapter builder (see docs/DESIGN.md). Runs in
-``.venvs/transformers`` (transformers>=5.17, jinja2, jmespath; no torch).
+``.venvs/transformers`` (transformers==5.17.0, jinja2, jmespath; no torch),
+built by ``scripts/engines/transformers.sh``.
 
-Entry points (transformers 5.17):
+Entry points (transformers 5.17.0), called exactly as below:
 
-* ``tok = AutoTokenizer.from_pretrained(repo, revision=...)``; ``tok.response_template``
-* non-streaming: ``tok.parse_response(text_or_ids, prefix=prompt_text, tools=tools)``
-* streaming: ``ResponseParser(template, prefix=..., tools=...)``; ``.feed(chunk)``
-  per text delta; ``msg, events = parser.finalize()``
-* the legacy ``response_schema`` key is silently dropped in 5.x; do not use it
+* non-streaming: ``tok.parse_response(output_ids, prefix=prompt_text, tools=tools)``
+  (``output_ids`` are decoded inside transformers, as ``transformers serve`` does)
+* streaming: ``ResponseParser(tok.response_template, prefix=prompt_text, tools=tools)``;
+  ``initial_events``, then ``.feed(delta)`` once per id group, then ``.finalize()``.
+  Text deltas come from the Rust ``tokenizers.decoders.DecodeStream`` with
+  ``skip_special_tokens=False``, stepped one id at a time. That is the
+  detokenizer ``transformers serve`` uses when a response parser is active,
+  and it never splits a multi-byte character.
+* Parser events become OpenAI deltas through transformers' own
+  ``transformers.cli.serving.utils.response_events_to_chunks``. Tool-call
+  arguments are serialized with its ``_normalize_tool_call``
+  (``json.dumps``, so non-ASCII is ``\\u``-escaped; it is still valid JSON).
+* The legacy ``response_schema`` key is dropped by transformers 5.x and is
+  never used here.
 
-Coverage rule: only report a family as supported when the model repo itself
-ships a ``response_template`` at the pinned revision (as of 2026-09-25 only
-``google/gemma-4-*``). Templates copied from transformers' tests are NOT what
-users get from the Hub and must not be used for matrix results.
+Coverage rule: a ``(family, model)`` pair is supported only when the model's
+Hub repo itself ships a ``response_template`` at the pinned revision. As of
+2026-09-25 that is only the ``google/gemma-4-*-it`` repos in
+:data:`PINNED_REPOS`. At load time the adapter re-checks that the downloaded
+``tokenizer_config.json`` contains ``response_template``. Response templates
+copied from transformers' tests, and the ``transformers serve`` fallbacks
+keyed on ``model_type``, are not what the Hub repo ships, so they are never
+used for results.
+
+Differences from ``transformers serve`` (recorded in ``parser_config``):
+``tools`` are passed to the parser, which casts tool-call arguments with the
+tool's JSON schema. ``serve`` does not pass them. The prompt is rendered from
+a fixed placeholder user message, because fixtures do not record the
+conversation. Only the part after the template's ``start_anchor`` reaches
+the parser.
 
 Reference implementation: ``.spikes/transformers/spike_transformers.py``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import hashlib
+import importlib
+import json
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from canitoolcall.adapters.base import Adapter, ReplayInput, Support, ToolSpec
-from canitoolcall.results import ParseResult
+from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
+from canitoolcall.results import ParsedToolCall, ParseResult
+
+PINNED_REPOS: dict[str, str] = {
+    "google/gemma-4-E2B-it": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "google/gemma-4-E4B-it": "ee0ef6023621cff504d758262d4e04895a5af4a2",
+    "google/gemma-4-12B-it": "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7",
+    "google/gemma-4-26B-A4B-it": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+    "google/gemma-4-31B-it": "842da3794eaa0b77d5f08bae87a17459d91ff475",
+}
+"""Hub repos verified (2026-09-25) to ship ``response_template`` in
+``tokenizer_config.json``, with the revision the check was made at. All five
+ship the same template."""
+
+FAMILY_REPOS: dict[str, frozenset[str]] = {
+    "gemma4": frozenset(PINNED_REPOS),
+}
+"""Family slug -> repos whose Hub-shipped ``response_template`` is the parser.
+
+In transformers the tool parser and the reasoning parser are both the one
+``response_template`` (fields ``tool_calls`` and ``thinking``). No other
+family's repos ship one: Qwen3/3.5/3.6, SmolLM3, ERNIE-4.5, gpt-oss,
+GLM-4.5/4.6, DeepSeek-V3.1/V3.2, Kimi-K2, Mistral-Small-3.2 and Ministral-3 were
+checked. Cohere and Llama are gated and were not checked."""
+
+PARSER_NAME = "response_template"
+"""transformers has no named parsers: the repo's ``response_template`` is the parser."""
+
+PROMPT_USER_MESSAGE = "Please help with the request, using the available tools if needed."
+"""Placeholder user turn for rendering the prompt (fixtures carry no conversation).
+
+Only the text after the template's ``start_anchor`` (Gemma 4: ``<|turn>model\\n``)
+reaches the parser, so the wording does not affect parsing."""
+
+TEMPLATE_FILE = "tokenizer_config.json"
+
+SERVE_UTILS = "transformers.cli.serving.utils"
+"""``transformers serve`` helpers reused for event -> delta translation and
+tool-call serialization (importable without torch in 5.17.0)."""
+
+
+def _engine(module: str) -> Any:
+    """Import an engine module lazily (adapter modules stay stdlib-only at import time)."""
+    return importlib.import_module(module)
+
+
+def response_template_sha256(template: Mapping[str, Any]) -> str:
+    """sha256 of the template as canonical JSON (sorted keys, compact, UTF-8)."""
+    blob = json.dumps(template, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def resolve_tokenizer(raw: ReplayInput) -> tuple[str, str]:
+    """``(repo, revision)`` whose tokenizer and ``response_template`` are used.
+
+    The fixture's tokenizer pin wins, because it produced ``output_token_ids``.
+    Otherwise the reference model is used at the family's pinned revision,
+    falling back to :data:`PINNED_REPOS`.
+    """
+    if raw.tokenizer is not None:
+        return raw.tokenizer.repo, raw.tokenizer.revision
+    if raw.revision:
+        return raw.model, raw.revision
+    try:
+        return raw.model, PINNED_REPOS[raw.model]
+    except KeyError:
+        raise ValueError(f"no pinned revision for {raw.model!r} and the fixture has no tokenizer pin") from None
+
+
+def exception_text(exc: BaseException) -> str:
+    """``"Type: message"`` as recorded in :attr:`ParseResult.exception`."""
+    return f"{type(exc).__name__}: {exc}"
+
+
+@dataclass
+class StreamAccumulator:
+    """OpenAI-client-style accumulation of streamed deltas (DESIGN.md rule 8).
+
+    ``transformers serve`` emits every tool call as one complete delta with a
+    fresh ``index``, so merging by index amounts to appending.
+    """
+
+    content: list[str] = field(default_factory=list)
+    reasoning: list[str] = field(default_factory=list)
+    tool_calls: list[ParsedToolCall] = field(default_factory=list)
+
+    def add_content(self, text: str) -> None:
+        self.content.append(text)
+
+    def add_reasoning(self, text: str) -> None:
+        self.reasoning.append(text)
+
+    def add_tool_call(self, name: str, arguments: str) -> None:
+        self.tool_calls.append(ParsedToolCall(name=name, arguments_raw=arguments))
+
+    def result(self, exception: str | None = None) -> ParseResult:
+        return ParseResult(
+            content="".join(self.content) if self.content else None,
+            reasoning_content="".join(self.reasoning) if self.reasoning else None,
+            tool_calls=tuple(self.tool_calls),
+            exception=exception,
+        )
+
+
+@dataclass(frozen=True)
+class _Loaded:
+    """One tokenizer at one revision, with its verified Hub-shipped template."""
+
+    repo: str
+    revision: str
+    tok: Any
+    template: dict[str, Any]
+    template_sha256: str
+    chat_template_sha256: str | None
 
 
 class TransformersAdapter(Adapter):
     name: ClassVar[str] = "transformers"
     pinned_version: ClassVar[str] = "5.17.0"
+    supports_text_deltas: ClassVar[bool] = True
+
+    def __init__(self) -> None:
+        self._loaded: dict[tuple[str, str], _Loaded] = {}
+
+    # -- engine identity -------------------------------------------------
 
     def version(self) -> str:
-        raise NotImplementedError
+        try:
+            transformers = _engine("transformers")
+        except ImportError as e:
+            raise AdapterUnavailable(
+                f"transformers is not installed here ({e}); run scripts/engines/transformers.sh"
+            ) from e
+        return str(transformers.__version__)
+
+    def engine_details(self) -> dict[str, Any]:
+        from importlib import metadata
+        from importlib.util import find_spec
+
+        details: dict[str, Any] = {}
+        for dist in ("tokenizers", "huggingface_hub", "jinja2", "jmespath"):
+            try:
+                details[dist] = metadata.version(dist)
+            except metadata.PackageNotFoundError:
+                details[dist] = None
+        details["torch"] = "installed" if find_spec("torch") is not None else None
+        details["pinned_repos"] = dict(PINNED_REPOS)
+        return details
+
+    # -- coverage ----------------------------------------------------------
 
     def supports(self, family: str, model: str) -> Support:
-        raise NotImplementedError
+        repos = FAMILY_REPOS.get(family)
+        if repos is None:
+            return Support(
+                False,
+                f"no Hub repo of family {family!r} ships a response_template in {TEMPLATE_FILE} "
+                "(transformers only parses with a repo-shipped template)",
+            )
+        if model not in repos:
+            return Support(
+                False,
+                f"{model} is not a repo verified to ship a response_template (verified: {', '.join(sorted(repos))})",
+            )
+        return Support(True)
+
+    # -- loading -------------------------------------------------------------
+
+    def _load(self, raw: ReplayInput) -> _Loaded:
+        repo, revision = resolve_tokenizer(raw)
+        key = (repo, revision)
+        if key in self._loaded:
+            return self._loaded[key]
+        hf_hub_download = _engine("huggingface_hub").hf_hub_download
+        AutoTokenizer = _engine("transformers").AutoTokenizer
+
+        with open(hf_hub_download(repo, TEMPLATE_FILE, revision=revision), encoding="utf-8") as f:
+            shipped = json.load(f).get("response_template")
+        if not isinstance(shipped, dict):
+            # Harness problem: the static coverage table is stale for this revision.
+            raise RuntimeError(f"{repo}@{revision} does not ship a response_template in {TEMPLATE_FILE}")
+        tok = AutoTokenizer.from_pretrained(repo, revision=revision)
+        template = getattr(tok, "response_template", None)
+        if template != shipped:
+            raise RuntimeError(f"{repo}@{revision}: tokenizer.response_template differs from {TEMPLATE_FILE}")
+        chat_template = getattr(tok, "chat_template", None)
+        loaded = _Loaded(
+            repo=repo,
+            revision=revision,
+            tok=tok,
+            template=shipped,
+            template_sha256=response_template_sha256(shipped),
+            chat_template_sha256=(
+                hashlib.sha256(chat_template.encode("utf-8")).hexdigest() if isinstance(chat_template, str) else None
+            ),
+        )
+        self._loaded[key] = loaded
+        return loaded
+
+    def _prompt_text(self, st: _Loaded, raw: ReplayInput, tools: Sequence[ToolSpec]) -> str:
+        """Rendered prompt (``add_generation_prompt=True``), decoded like ``serve``'s ``_decode_prefix``."""
+        kwargs: dict[str, Any] = {}
+        if raw.thinking is not None:
+            kwargs["enable_thinking"] = raw.thinking
+        out = st.tok.apply_chat_template(
+            [{"role": "user", "content": PROMPT_USER_MESSAGE}],
+            tools=[dict(t) for t in tools] or None,
+            add_generation_prompt=True,
+            tokenize=True,
+            **kwargs,
+        )
+        ids = list(out["input_ids"] if hasattr(out, "keys") else out)
+        prompt = st.tok.decode(ids)
+        if not isinstance(prompt, str):
+            raise TypeError(f"tokenizer.decode returned {type(prompt).__name__}")
+        if raw.generation_prompt and not prompt.endswith(raw.generation_prompt):
+            raise RuntimeError(
+                f"rendered prompt does not end with the fixture's generation prompt {raw.generation_prompt!r}: "
+                f"...{prompt[-80:]!r}"
+            )
+        return prompt
+
+    # -- contract ------------------------------------------------------------
 
     def parser_config(self, raw: ReplayInput) -> dict[str, Any]:
-        raise NotImplementedError
+        st = self._load(raw)
+        return {
+            "tool_parser": PARSER_NAME,
+            "reasoning_parser": PARSER_NAME,
+            "response_template_source": f"{st.repo}@{st.revision}:{TEMPLATE_FILE}",
+            "response_template_sha256": st.template_sha256,
+            "chat_template_sha256": st.chat_template_sha256,
+            "tokenizer": f"{st.repo}@{st.revision}",
+            "tokenizer_mode": "hf",
+            "nonstream_entrypoint": "tokenizer.parse_response(output_ids, prefix=prompt, tools=tools)",
+            "stream_entrypoint": "ResponseParser(response_template, prefix=prompt, tools=tools).feed/.finalize",
+            "stream_detokenizer": "tokenizers.decoders.DecodeStream(skip_special_tokens=False), one id per step",
+            "stream_events": "transformers.cli.serving.utils.response_events_to_chunks",
+            "tools_passed_to_parser": True,
+            "prompt": {
+                "user_message": PROMPT_USER_MESSAGE,
+                "add_generation_prompt": True,
+                "enable_thinking": raw.thinking,
+            },
+            "stop_token_appended": None,
+        }
 
     def units(self, raw: ReplayInput) -> list[int]:
-        raise NotImplementedError
+        if raw.token_ids is not None:
+            return list(raw.token_ids)
+        st = self._load(raw)
+        return list(st.tok.encode(raw.text, add_special_tokens=False))
 
     def parse(self, raw: ReplayInput, tools: Sequence[ToolSpec]) -> ParseResult:
-        raise NotImplementedError
+        st = self._load(raw)
+        prompt = self._prompt_text(st, raw, tools)
+        ids = self.units(raw)
+        _normalize_tool_call = _engine(SERVE_UTILS)._normalize_tool_call
+
+        try:
+            msg = st.tok.parse_response(ids, prefix=prompt, tools=[dict(t) for t in tools] or None)
+            calls = [_normalize_tool_call(v) for v in msg.get("tool_calls") or []]
+        except Exception as e:  # engine outcome, not a harness error
+            return ParseResult(exception=exception_text(e))
+        content = msg.get("content")
+        thinking = msg.get("thinking")
+        return ParseResult(
+            content=content if isinstance(content, str) else None,
+            reasoning_content=thinking if isinstance(thinking, str) else None,
+            tool_calls=tuple(ParsedToolCall(name=c.name, arguments_raw=c.arguments) for c in calls),
+        )
+
+    def special_token_ids(self, raw: ReplayInput) -> Collection[int] | None:
+        """``all_special_ids`` plus every added token flagged ``special`` (Gemma 4: ``<|tool_call>``, ...)."""
+        tok = self._load(raw).tok
+        ids = {int(i) for i in tok.all_special_ids}
+        ids.update(int(i) for i, t in tok.added_tokens_decoder.items() if getattr(t, "special", False))
+        return frozenset(ids)
 
     def parse_stream(self, raw: ReplayInput, chunks: Sequence[Sequence[int]], tools: Sequence[ToolSpec]) -> ParseResult:
-        raise NotImplementedError
+        """One ``feed`` per id group; the group's text comes from ``DecodeStream``, one id per step."""
+        DecodeStream = _engine("tokenizers.decoders").DecodeStream
+
+        st = self._load(raw)
+        decoder = DecodeStream([], skip_special_tokens=False)
+        rust_tok = st.tok._tokenizer
+
+        def deltas() -> Iterator[str]:
+            for group in chunks:
+                pieces = (decoder.step(rust_tok, int(i)) for i in group)
+                yield "".join(p for p in pieces if p is not None)
+
+        return self._stream(st, raw, deltas(), tools)
+
+    def parse_stream_text(self, raw: ReplayInput, deltas: Sequence[str], tools: Sequence[ToolSpec]) -> ParseResult:
+        """Synthetic ``char:<seed>`` stress path: raw text deltas fed straight to ``ResponseParser``."""
+        return self._stream(self._load(raw), raw, iter(deltas), tools)
+
+    def _stream(self, st: _Loaded, raw: ReplayInput, deltas: Iterator[str], tools: Sequence[ToolSpec]) -> ParseResult:
+        prompt = self._prompt_text(st, raw, tools)
+        serve = _engine(SERVE_UTILS)
+        ResponseParser = _engine("transformers.utils.chat_parsing.response_parser").ResponseParser
+
+        acc = StreamAccumulator()
+
+        def emit(events: Iterable[dict[str, Any]]) -> None:
+            for item in serve.response_events_to_chunks(list(events)):
+                if isinstance(item, serve.ToolCall):
+                    acc.add_tool_call(item.name, item.arguments)
+                elif isinstance(item, serve.ReasoningText):
+                    acc.add_reasoning(str(item))
+                elif isinstance(item, str):
+                    acc.add_content(item)
+
+        try:
+            parser = ResponseParser(st.template, prefix=prompt, tools=[dict(t) for t in tools] or None)
+            emit(parser.initial_events)
+            for delta in deltas:
+                if delta:  # serve skips steps that decode to nothing (incomplete UTF-8)
+                    emit(parser.feed(delta))
+            _msg, final_events = parser.finalize()
+            emit(final_events)
+        except Exception as e:  # engine outcome; deltas already streamed are kept
+            return acc.result(exception=exception_text(e))
+        return acc.result()
