@@ -46,4 +46,4 @@ The files are gzipped to keep the repository small. `canitoolcall matrix --resul
 
 Every finding has a `repro` command that replays one of its fixtures through the harness. Four findings also have `direct_repro` scripts in `repro/`, which call the engine's own API with no canitoolcall code. Run each one with that engine's interpreter, for example `HF_HUB_OFFLINE=1 .venvs/sglang/bin/python results/2026-09-25/repro/sglang_qwen25_one_delta.py`.
 
-Nothing here has been reported upstream. Re-check each finding against the engine's latest release before filing it.
+This project has reported nothing upstream. Findings classified `engine_bug_known_upstream` match an issue someone else already filed, linked in `upstream`. Draft reports for the other findings are in `RELEASE_CHECKLIST.md` §7. Re-check each finding against the engine's latest release before filing it.

@@ -16,7 +16,10 @@ from canitoolcall.fixtures import load_fixtures, repo_root
 ROOT = repo_root() or Path(__file__).resolve().parents[2]
 
 LLAMA = {
-    "LicenseRef-llama3.3-community": ("llama3.3-community.txt", "Llama 3.3 is licensed under the Llama 3.3 Community License"),
+    "LicenseRef-llama3.3-community": (
+        "llama3.3-community.txt",
+        "Llama 3.3 is licensed under the Llama 3.3 Community License",
+    ),
     "LicenseRef-llama4-community": ("llama4-community.txt", "Llama 4 is licensed under the Llama 4 Community License"),
 }
 

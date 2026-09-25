@@ -123,7 +123,7 @@ The spike's candidate discrepancies were turned into fixtures and re-verified by
 - Streaming granularity: llama-server, Ollama and transformers `serve` emit one event per token, so multi-token chunkings are synthetic for those engines (`run.synthetic_strategies`) and never count. Three Ollama "failures" of the first snapshot existed only under such chunkings and are gone.
 - Truncated fixtures: an earlier run appended a stop token to output cut by `max_tokens`. That fabricated three failures (SGLang gpt-oss, llama.cpp Kimi K3); adapters now replay those fixtures with `finish_reason: "length"`.
 
-Nothing has been reported upstream. Each finding must be re-checked against the engine's latest release first.
+This project has reported nothing upstream. Ten findings match issues that others had already filed (`engine_bug_known_upstream`, with the issue in `upstream`). One of them, llama.cpp#27720, was closed by the maintainer as not feasible to handle. `RELEASE_CHECKLIST.md` §7 has draft reports for the rest. Re-check each finding against the engine's latest release before filing it.
 
 ## 7. Definition of done (v0.1)
 

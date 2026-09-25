@@ -124,17 +124,19 @@ finding("vllm-marker-text-in-arguments", "vllm", "engine_bug",
         "Format-marker text inside an argument string or reasoning (e.g. '</tool_call>', '<arg_key>', '[TOOL_CALLS]', '</function>') truncates the argument, splits it into phantom calls, or turns the whole call into content (hermes, glm45/glm47, kimi_k2, kimi_k3, gemma4, llama3_json, mistral, qwen3_coder, deepseek_v31).",
         lambda c, fid: marker(fid) or fid in {"kimi/k26-marker-terminator-in-string", "kimi/k3-control-marker-text-in-value", "mistral/llamacpp-ministral3-marker-in-reasoning"},
         direct="repro/vllm_hermes_marker_in_arguments.py")
-finding("vllm-kimi-k3-truncated-reasoning-as-content", "vllm", "engine_bug",
+finding("vllm-kimi-k3-truncated-reasoning-as-content", "vllm", "engine_bug_known_upstream",
         "kimi_k3 non-streaming returns unterminated reasoning (think channel opened by the prompt) as content; streaming returns it as reasoning.",
-        lambda c, fid: fid in {"kimi/k3-truncated-in-reasoning", "kimi/k3-bug-truncated-reasoning-recorded"})
-finding("vllm-kimi-k3-response-only", "vllm", "engine_bug",
+        lambda c, fid: fid in {"kimi/k3-truncated-in-reasoning", "kimi/k3-bug-truncated-reasoning-recorded"},
+        upstream="https://github.com/vllm-project/vllm/issues/57353")
+finding("vllm-kimi-k3-response-only", "vllm", "engine_bug_known_upstream",
         "kimi_k3 streaming puts a response-only completion (thinking disabled) into reasoning_content with the XTML markup leaked.",
-        lambda c, fid: fid == "kimi/k3-bug-response-only-completion")
+        lambda c, fid: fid == "kimi/k3-bug-response-only-completion",
+        upstream="https://github.com/vllm-project/vllm/issues/57688")
 finding("vllm-llama4-pythonic-underscore", "vllm", "engine_bug_known_upstream",
         "llama4_pythonic non-streaming rejects an argument name starting with '_' and returns the call as content; streaming parses it.",
         lambda c, fid: fid == "llama/l4-bug-leading-underscore-identifier", upstream="https://github.com/vllm-project/vllm/issues/56840")
 finding("vllm-llama3-text-before-python-tag", "vllm", "engine_bug",
-        "llama3_json drops text before <|python_tag|> (SGLang's test keeps it as content).",
+        "llama3_json non-streaming drops text before <|python_tag|> (SGLang's test keeps it as content); streaming returns the text and the call JSON as content with no tool call.",
         lambda c, fid: fid == "llama/l3-sglang-text-before-python-tag")
 finding("vllm-hermes-stream-incomplete-json", "vllm", "engine_bug",
         "hermes streaming returns a call for '<tool_call>' JSON missing its closing brace and </tool_call>; non-streaming (as vLLM's test asserts) returns no call.",
@@ -146,7 +148,8 @@ finding("vllm-missing-close-drops-argument", "vllm", "engine_bug_known_upstream"
         notes="GLM part: vllm#57826's thread (2026-09-23) says it was already fixed on main by #45701 (merged 2026-06-16, before v0.30.0), but vLLM 0.30.0 still drops the value: vllm/parser/glm47_moe.py L56-66 gates _PARTIAL_ARG_RE behind 'if partial:', and Glm47MoeModelToolParser.extract_tool_calls returns {\"city\": \"Berlin\"} without unit. Settle the conflicting comment before reporting. The glm fixture's raw_output is derived (tag x-derived), not quoted from the issue.")
 finding("vllm-qwen3-coder-text-after-call", "vllm", "engine_bug_known_upstream",
         "qwen3_coder drops text after a call.", lambda c, fid: fid == "qwen3-xml/bug-coder-text-after-call",
-        upstream="https://github.com/sgl-project/sglang/issues/40739")
+        upstream="https://github.com/vllm-project/vllm/issues/56263",
+        notes="vllm#56263 reports this class (non-streaming drops post-tool-call text) for deepseekv3 and hermes; qwen3_coder is not named there, so add it as a comment. The fixture comes from the same bug in SGLang (sgl-project/sglang#40739).")
 finding("vllm-harmony-header-leaks", "vllm", "engine_bug",
         "gpt-oss: output cut inside a call header leaks the header markup into content; a stray 'commentary to=assistant' header yields a call named 'assistant<|channel|>analysis'.",
         lambda c, fid: fid in {"gpt-oss/harmony-truncated-in-header", "gpt-oss/llamacpp-stray-commentary-header"})
@@ -194,8 +197,13 @@ finding("llamacpp-mistral-bos-rejects-calls", "llamacpp", "engine_bug_candidate"
 finding("llamacpp-kimi-k3-eog-leak", "llamacpp", "engine_bug",
         "Kimi K3: <|end_of_msg|> is both a preserved token and the end-of-generation token, so llama-server renders it and it leaks into content/reasoning.",
         lambda c, fid: c["family"] == "kimi" and "K3" in model(fid) and not marker(fid) and fid not in {"kimi/k3-control-marker-text-in-value"} and any("end_of_msg" in (r["detail"] or "") for r in c["checks"]))
+finding("llamacpp-garbled-harmony-channel", "llamacpp", "engine_bug_known_upstream",
+        "gpt-oss generations with a malformed Harmony channel name ('commentary?', '??', 'comment') raise 'does not match the expected peg-native format' and fail the whole turn instead of degrading to content.",
+        lambda c, fid: c["family"] == "gpt-oss" and FX[fid]["provenance"]["kind"] == "bug_report" and any("peg-native format" in (r["detail"] or "") for r in c["checks"]),
+        upstream="https://github.com/ggml-org/llama.cpp/issues/27720",
+        notes="Closed by the maintainer on 2026-08-26 as not feasible to handle ('handling garbage output is not feasible from a parsing perspective'); the reporter's generations came from a client that dropped reasoning_content. Do not re-file; the matrix still shows it because a graceful fallback to content is what the fixtures expect.")
 finding("llamacpp-rejects-realistic-output", "llamacpp", "engine_bug",
-        "Official-template renders and bug-report outputs raise 'does not match the expected peg-native format' instead of parsing or degrading to content (a plain Llama 3 JSON answer, content that starts with a JSON object, Kimi K3 XTML attribute escaping, garbled gpt-oss channel names from bug reports).",
+        "Official-template renders and bug-report outputs raise 'does not match the expected peg-native format' instead of parsing or degrading to content (a plain Llama 3 JSON answer, content that starts with a JSON object, Kimi K3 XTML attribute escaping).",
         lambda c, fid: any("peg-native format" in (r["detail"] or "") for r in c["checks"]) and FX[fid]["provenance"]["kind"] != "engine_test")
 finding("llamacpp-strict-grammar-variants", "llamacpp", "strict_grammar_variant",
         "Engine-test variants outside the official template's grammar (other engines' test strings: Kimi K2 id/noise variants, GLM-4.5 newline format, Mistral v3 JSON variants, Llama 3 'arguments' key) raise 'does not match the expected peg-native format'. llama.cpp's parser is derived from the template, so rejecting them is strict rather than wrong; raising instead of returning content is still unfriendly.",

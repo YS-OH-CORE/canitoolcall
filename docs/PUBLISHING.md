@@ -1,5 +1,7 @@
 # Publishing checklist (human steps)
 
+The step-by-step list to follow is [`RELEASE_CHECKLIST.md`](../RELEASE_CHECKLIST.md). It also has the announcement plan and the draft upstream bug reports; this page gives background on each step.
+
 Nothing is pushed or published from the development machine. The repository, the PyPI project and the Pages site are all created by a maintainer, by hand, following the steps below. Do them in order.
 
 ## 1. Before the first push
