@@ -1,0 +1,51 @@
+{
+  "slug": "llama",
+  "name": "Llama (3.1, 3.2, 3.3, 4)",
+  "spec_version": "0.1",
+  "has_reasoning": false,
+  "markers": [
+    "<|python_tag|>",
+    "<|eom_id|>",
+    "<|eot_id|>",
+    "<|start_header_id|>",
+    "<|end_header_id|>",
+    "<|begin_of_text|>",
+    "<|end_of_text|>",
+    "<|python_start|>",
+    "<|python_end|>",
+    "<|eot|>",
+    "<|eom|>",
+    "<|header_start|>",
+    "<|header_end|>"
+  ],
+  "reference_models": [
+    {
+      "repo": "meta-llama/Llama-3.3-70B-Instruct",
+      "revision": "6f6073b423013f6a7d4d9f39144961bfbfbc386b",
+      "variant": "llama3-json",
+      "default_generation_prompt": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+      "stop_tokens": [
+        "<|end_of_text|>",
+        "<|eom_id|>",
+        "<|eot_id|>"
+      ],
+      "gated": true,
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+      "revision": "92f3b1597a195b523d8d9e5700e57e4fbb8f20d3",
+      "variant": "llama4-pythonic",
+      "default_generation_prompt": "<|header_start|>assistant<|header_end|>\n\n",
+      "stop_tokens": [
+        "<|end_of_text|>",
+        "<|eom|>",
+        "<|eot|>"
+      ],
+      "gated": true,
+      "tokenizer_mode": "hf"
+    }
+  ],
+  "format_notes": "docs/formats/llama.md",
+  "notes": "Two syntaxes selected by models[0]: meta-llama/Llama-3* -> JSON ({\"name\", \"parameters\"}, optional <|python_tag|>; vLLM llama3_json, SGLang llama3), meta-llama/Llama-4* -> pythonic ([f(a=1), g()]; vLLM llama4_pythonic, SGLang pythonic). Tags x-llama-json / x-llama-pythonic say which. All meta-llama repos are gated; every fixture's tokenizer pin names the ungated mirror used instead: unsloth/Llama-3.3-70B-Instruct@99cd0d2c829e92a67c844f9144c2509632e5c87f (tokenizer.json sha256 equal to meta-llama/Llama-3.3-70B-Instruct's; chat_template.jinja byte-identical to llama.cpp's copy of the HF template) and unsloth/Llama-4-Scout-17B-16E-Instruct@afd8e498c87bda51c7ea8ec68ea2f7c066e6340b (tokenizer.json sha256 equal to meta-llama/Llama-4-Scout-17B-16E-Instruct's; its chat template is NOT Meta's, so do not use it to build Llama 4 prompts)."
+}

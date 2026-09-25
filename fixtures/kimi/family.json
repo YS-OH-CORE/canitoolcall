@@ -1,0 +1,57 @@
+{
+  "slug": "kimi",
+  "name": "Kimi (K2.x section tokens, K3 XTML)",
+  "spec_version": "0.1",
+  "has_reasoning": true,
+  "markers": [
+    "<|tool_calls_section_begin|>",
+    "<|tool_calls_section_end|>",
+    "<|tool_call_begin|>",
+    "<|tool_call_end|>",
+    "<|tool_call_argument_begin|>",
+    "<think>",
+    "</think>",
+    "<|im_end|>",
+    "<|im_assistant|>",
+    "<|im_system|>",
+    "<|im_middle|>",
+    "<|open|>",
+    "<|close|>",
+    "<|sep|>",
+    "<|end_of_msg|>"
+  ],
+  "reference_models": [
+    {
+      "repo": "moonshotai/Kimi-K2.6",
+      "revision": "7eb5002f6aadc958aed6a9177b7ed26bb94011bb",
+      "variant": "kimi-k2-thinking",
+      "default_generation_prompt": "<|im_assistant|>assistant<|im_middle|><think>",
+      "stop_tokens": [
+        "<|im_end|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "moonshotai/Kimi-K2-Instruct-0905",
+      "revision": "ac6c49f04883bd0a0598b790693a72061c676629",
+      "variant": "kimi-k2-instruct",
+      "default_generation_prompt": "<|im_assistant|>assistant<|im_middle|>",
+      "stop_tokens": [
+        "<|im_end|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "moonshotai/Kimi-K3",
+      "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+      "variant": "kimi-k3-xtml",
+      "default_generation_prompt": "<|open|>message role=\"assistant\"<|sep|><|open|>think<|sep|>",
+      "stop_tokens": [
+        "<|end_of_msg|>"
+      ],
+      "tokenizer_mode": "hf"
+    }
+  ],
+  "format_notes": "docs/formats/kimi.md",
+  "notes": "Two unrelated sub-formats selected by models[0]: Kimi-K2* -> kimi_k2 (section tokens, the tool name lives in the call id functions.{name}:{idx}); Kimi-K3 -> kimi_k3 (XTML control tokens). Tags x-kimi-k2 / x-kimi-k3 name the sub-format. K3 re-uses ids 163586-163588 for different tokens than K2, so token ids only make sense with the fixture's own tokenizer pin. Kimi tokenizers are tiktoken-based (trust_remote_code=True)."
+}

@@ -1,0 +1,63 @@
+{
+  "slug": "glm",
+  "name": "GLM (4.5, 4.6, 4.7, 5.x)",
+  "spec_version": "0.1",
+  "has_reasoning": true,
+  "markers": [
+    "<tool_call>",
+    "</tool_call>",
+    "<arg_key>",
+    "</arg_key>",
+    "<arg_value>",
+    "</arg_value>",
+    "<think>",
+    "</think>",
+    "<tool_response>",
+    "</tool_response>",
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|observation|>",
+    "<|endoftext|>"
+  ],
+  "reference_models": [
+    {
+      "repo": "zai-org/GLM-4.5",
+      "revision": "cbb2c7cfb52fa128a9660cb1a7a78e017899e115",
+      "variant": "glm45-newline",
+      "default_generation_prompt": "<|assistant|>",
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "zai-org/GLM-4.7",
+      "revision": "602d01efcdd332c5238ca4bcede555defbe83eb7",
+      "variant": "glm47-compact",
+      "default_generation_prompt": "<|assistant|><think>",
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "zai-org/GLM-5.3",
+      "revision": "aca966e4e02791568aa6a4ced368624b3d897f42",
+      "variant": "glm53-compact",
+      "default_generation_prompt": "<|assistant|><think>",
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "tokenizer_mode": "hf"
+    }
+  ],
+  "format_notes": "docs/formats/glm.md",
+  "notes": "Two whitespace variants of one XML-ish format: GLM-4.5/4.6 put newlines between the name, keys and values; GLM-4.7 and 5.x are compact. String values are raw (no escaping); other values are JSON, so a parser needs the tool schema. The variant is selected by models[0] (zai-org/GLM-4.5 -> glm45, zai-org/GLM-4.7 and zai-org/GLM-5.3 -> glm47 parsers). Tags x-glm45/x-glm47/x-glm53 name the reference template."
+}

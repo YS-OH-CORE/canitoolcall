@@ -150,3 +150,26 @@ The `meta-llama/llama-models` repo licence is reported by GitHub as "Other" (NOA
 - `text-plus-call`
 - `json-in-content-not-a-call` (a legitimate JSON answer must not become a call)
 - `single-delta`
+
+## Fixtures in this repo
+
+`fixtures/llama/` (34 fixtures) is built by `uv run --script scripts/fixtures/llama/build.py`. The build is deterministic and never touches the gated meta-llama repos.
+
+**Mirrors (verified by the build):**
+- **Template:** `unsloth/Llama-3.3-70B-Instruct@99cd0d2` `chat_template.jinja` is byte-identical to llama.cpp's copy of the HF template. The build checks this against llama.cpp `a25c9865` on every run.
+- **Llama 3 tokenizer:** the same mirror's `tokenizer.json` has the same sha256 as the gated `meta-llama/Llama-3.3-70B-Instruct` LFS object (`6b9e4e7f…`).
+- **Llama 4 tokenizer:** `unsloth/Llama-4-Scout-17B-16E-Instruct@afd8e49` matches `meta-llama/Llama-4-Scout-17B-16E-Instruct` (`172c9eb4…`).
+- **Llama 4 template:** the mirror's chat template is a **different** blob from Meta's, so there are no Llama 4 template renders.
+- Every fixture's `tokenizer` pin names its mirror; `models[0]` stays the meta-llama repo.
+
+| File | Source |
+|---|---|
+| `l3-render.jsonl` | Llama 3.3 template (renders checked identical for the 3.1-8B and 3.2-3B templates) |
+| `recorded.jsonl` | "Model Response Format" blocks of Meta's `llama3_3` and `llama4` prompt-format docs @ `0e0b8c5`, checked verbatim against the doc by the build, plus a token-prefix truncation |
+| `truncated.jsonl` | a token prefix of a render |
+| `imported.jsonl` | vLLM v0.30.0 and SGLang v0.5.20 tests (Apache-2.0), plus SGLang #35562 and vLLM #48294 and #56840 |
+
+Notes:
+- **Syntax is selected by `models[0]`:** Llama-3* uses JSON and Llama-4* uses pythonic. Meta's docs also show Llama 3.2/3.3 emitting *pythonic* lists when the system prompt asks for them. These are not included, because a family/model key cannot select a different parser for the same model. A per-fixture variant would be needed.
+- **Text around calls.** The template drops `content` next to a call and renders only one call per message. Text-plus-call and multi-call shapes therefore come from engine tests and Meta's recordings only.
+

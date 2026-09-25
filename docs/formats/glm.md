@@ -141,3 +141,23 @@ The EOS list is `<|endoftext|>`, `<|user|>` and `<|observation|>`. After tool ca
 - `multi-call-single-delta`
 - `think-no-open-tag`
 - `missing-close-arg`
+
+## Fixtures in this repo
+
+`fixtures/glm/` (51 fixtures) is built by `uv run --script scripts/fixtures/glm/build.py`. The build is deterministic and downloads only tokenizer and template files at pinned revisions.
+
+| File | Source | `models` |
+|---|---|---|
+| `glm45-render.jsonl` | GLM-4.5 `chat_template.jinja` @ `cbb2c7c` (newline variant) | GLM-4.5, GLM-4.5-Air, GLM-4.6 (renders checked identical) |
+| `glm47-render.jsonl` | GLM-4.7 `chat_template.jinja` @ `602d01e` (compact variant) | GLM-4.7, GLM-4.7-Flash (identical text; Flash uses the 154xxx GLM-5 vocabulary) |
+| `glm53-render.jsonl` | GLM-5.3 `chat_template.jinja` @ `aca966e` | GLM-5.3 |
+| `truncated-malformed.jsonl` | token prefixes of renders; one render with its last `</arg_value>` token deleted (vLLM #57826) | |
+| `imported.jsonl` | vLLM v0.30.0 tests (Apache-2.0), Ollama `7af39318` `glm46_test.go` (MIT) and SGLang issue #33324 | |
+
+Notes:
+- **Expected content and reasoning** are the message as authored. The separators that the template adds (GLM-4.5's `\n` before `<think>`, content and `<tool_call>`) are format glue, not content. Engines that keep them get `soft_pass`.
+- **Typed values.** `glm/*-schema-coercion` renders `seconds=3` (integer) and `label="3"` (string) as the same text `3`; only the schema tells them apart. `glm/glm47-number-looking-string` keeps `123_456` and `0042` as strings (SGLang #30644).
+- **Marker inside a value.** `glm/*-marker-in-arguments` contains `<tool_call>`, `</tool_call>` and `<arg_key>` inside a string value, but not `</arg_value>`, so the value is still delimited unambiguously.
+- **Thinking disabled.** Engine-test strings that start directly with content or a call are recorded with `thinking=false` and the generation prompt that makes them a complete completion (`<|assistant|>\n<think></think>` for 4.5, `<|assistant|></think>` for 4.7).
+- **models[0] and parsers.** GLM-5.3 fixtures use `zai-org/GLM-5.3` as `models[0]`. Parser maps keyed on `GLM-4.7` must also map `GLM-5` to the glm47 parsers.
+

@@ -30,7 +30,8 @@ The template writes whatever `tool_call['id']` the client sends. If a client sen
 **Other details:**
 - **Arguments:** the JSON follows `<|tool_call_argument_begin|>` directly. Strings are passed through; dicts go through `tojson`.
 - **Separators:** there are none between calls.
-- **Reasoning:** the K2-Thinking, K2.5 and K2.6 generation prompt is `<|im_assistant|>assistant<|im_middle|><think>`. The raw completion therefore starts **inside the reasoning** and contains only `</think>`. With `thinking=false` the prompt pre-fills `<think></think>`.
+- **Reasoning:** the K2.5, K2.6 and K2.7-Code generation prompt is `<|im_assistant|>assistant<|im_middle|><think>`. The raw completion therefore starts **inside the reasoning** and contains only `</think>`. With `thinking=false` the prompt pre-fills `<think></think>`.
+  - **Kimi-K2-Thinking is different:** its generation prompt (rev `a51ccc0`) is just `<|im_assistant|>assistant<|im_middle|>`, so the model emits `<think>` itself (verified by rendering all four templates, 2026-09-25).
   - By default (`preserve_thinking=false`), reasoning in history is replaced with `<think></think>` up to the last non-tool-call assistant message.
   - K2-Instruct/0905 have no thinking.
 - **Tool declarations:** `<|im_system|>tool_declare<|im_middle|>` + `tools|tojson(separators=(',', ':'))`.
@@ -140,3 +141,22 @@ Other engines:
 - `skip-think-channel`
 - `stream-interval`
 - `parallel`
+
+## Fixtures in this repo
+
+`fixtures/kimi/` (49 fixtures) is built by `uv run --script scripts/fixtures/kimi/build.py`. The build is deterministic and downloads only tokenizer and template files at pinned revisions.
+
+| File | Source | What |
+|---|---|---|
+| `k26-render.jsonl` | Kimi-K2.6 `chat_template.jinja` @ `7eb5002` | K2 section tokens with thinking (`preserve_thinking=true`, so the rendered turn keeps its reasoning) |
+| `k2i-render.jsonl` | Kimi-K2-Instruct-0905 `chat_template.jinja` @ `ac6c49f` | K2 without thinking (also emitted by Kimi-K2-Instruct: the render is identical) |
+| `k3-render.jsonl` | Kimi-K3 `encoding_k3.py` @ `f831ab6`, called by the K3 tokenizer | XTML; control tokens vs. plain-text tokens exactly as the encoder produces them |
+| `truncated.jsonl` | token prefixes of the renders above | what `max_tokens` produces |
+| `imported.jsonl` | vLLM v0.30.0 tests (Apache-2.0) and vLLM issues #57353 and #57688 | line-anchored quotes |
+
+Notes:
+- **Siblings.** Every render is compared against the sibling templates (K2.5, K2-Thinking, K2.7-Code), and a sibling is listed in `models` only if all its renders are identical. None of them qualified. K2.5 has no `preserve_thinking`, so its history render drops the reasoning of a plain-text turn. K2-Thinking emits `<think>` itself (see above).
+- **Tool-call ids** follow Moonshot's guidance: `functions.{name}:{idx}`, with a global counter. The multi-turn fixture's second call is therefore `:1`.
+- **Markers inside arguments.** K2 tokenizes a marker written inside a JSON string as the marker token (`kimi/k26-marker-terminator-in-string` contains the `<|tool_call_end|>` id inside the string). K3 encodes argument text with `allow_special=False`, so `kimi/k3-control-marker-text-in-value` has the *text* `<|close|>` as ordinary tokens. Only `output_token_ids` can tell it apart from the real marker.
+- **The K3 no-tools request** (`kimi/k3-bug-truncated-reasoning-recorded`) has `tools: []`, as in the issue. vLLM rejects an empty `tools` array, so adapters should omit the field when it is empty.
+
