@@ -210,3 +210,38 @@ Other engines:
 - `code-fence-args` (V3/R1)
 - `no-separator-chain` (V3.1)
 - `think-close-only`
+
+## Fixture corpus (`fixtures/deepseek/`, 85 fixtures)
+
+Regenerate with `.venvs/transformers/bin/python scripts/fixtures/deepseek/build.py`. Add `--check` to confirm that the committed files are up to date. `models[0]` selects the sub-format, and every fixture also carries an `x-deepseek-v3|v31|v32|v4|v41` tag.
+
+| Sub-format | Reference (pinned) | Official renderer used | Fixtures |
+|---|---|---|---|
+| V3 / R1 | DeepSeek-V3-0324 `e9b33ad` | `tokenizer_config.json` Jinja. Its tool-call rendering is identical to R1-0528's, but it has no think stripping | 10 rendered + 7 vLLM tests |
+| V3.1 | DeepSeek-V3.1 `c0781d0` (= V3.1-Terminus template) | Jinja, `thinking=false` | 11 rendered + 1 vLLM test |
+| V3.2 | DeepSeek-V3.2 `a7e62ac` | `encoding/encoding_dsv32.py`, run as-is | 16 rendered + 1 SGLang test |
+| V4 | DeepSeek-V4-Flash `60d8d70` (= V4-Pro encoder) | `encoding/encoding_dsv4.py` | 17 rendered + 1 SGLang test |
+| V4.1 | DeepSeek-V4.1-Flash `dba1be0` | `encoding/encoding.py` | 19 rendered + 2 vLLM tests |
+
+**The expected values are oracle-checked.** For V3.2, V4 and V4.1, every well-formed rendered fixture, and every imported one marked `oracle`, is fed back through DeepSeek's own `parse_message_from_completion_text`. The build fails unless that parse equals `expected` exactly. The expected values are therefore the model vendor's own parse, not any engine's.
+
+**Coverage, per sub-format:**
+- single, parallel, no call, text before the call, empty arguments
+- numeric arguments, with a `"007"` string next to real numbers
+- unicode
+- marker-like text inside a string argument
+- truncation
+
+**Additional coverage:**
+- **DSML only:**
+  - thinking mode (the prompt ends with `<think>`, so the output holds only `</think>`)
+  - `string="false"` JSON objects and arrays
+  - unescaped `<`, `>`, `"` and `\n` in `string="true"` values
+  - truncation inside reasoning, and in the second of two invokes
+- **V4.1 only:** long arguments and whitespace-padded string values.
+- **Multi-turn:** V3.1 (the prompt after tool output is empty), V4 and V4.1.
+
+**Limitations:**
+- **R1-0528 reasoning cannot be rendered.** Its template drops everything before `</think>`, so there are no rendered R1-0528 fixtures. V3/R1 is covered through V3-0324, which renders the same tool-call bytes.
+- **V3.1 thinking mode with tools is not supported** (per the model card) and is not rendered.
+- **`sglang-v4-self-closing-invoke`** follows SGLang's claim that V4 emits `<｜DSML｜invoke name="x"/>` for zero-argument tools. The official encoder never renders that form, and the reference parser rejects it. See the fixture's notes.

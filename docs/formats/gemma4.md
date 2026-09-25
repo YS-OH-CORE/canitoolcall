@@ -124,3 +124,26 @@ The asymmetric `<|x>` / `<x|>` open/close style is unique to Gemma 4. **The stri
 - `skip-special-tokens`
 - `key-equals-drift`
 - `unclosed-channel`
+
+## Fixture corpus (`fixtures/gemma4/`, 48 fixtures)
+
+Regenerate with `.venvs/transformers/bin/python scripts/fixtures/gemma4/build.py`. Add `--check` to confirm that the committed files are up to date. The reference is gemma-4-31B-it `842da37` (tokenizer files and `chat_template.jinja` only). The 26B-A4B-it and 12B-it templates are byte-identical. E2B/E4B ship a *different* template and are not listed in `models`.
+
+| Source | Count | What |
+|---|---|---|
+| `template_render` | 30 | The official template, with thinking on and off. There is a history-vs-generation difference here: with thinking off, the generation prompt pre-fills `<\|channel>thought\n<channel\|>`, which a history render lacks. The output is then everything after `<\|turn>model\n`. Generation is cut at the first stop id (`<eos>`, `<turn\|>`, `<\|tool_response>`). |
+| `engine_test` | 17 | vLLM `test_gemma4_tool_parser.py` and `test_gemma4_reasoning_parser.py`, and SGLang `TestGemma4Detector`, line-anchored. |
+| `bug_report` | 1 | ollama#18390: an unquoted object key containing spaces. |
+
+**Other notable renders:**
+- The case-insensitive `dictsort` key order.
+- Python-formatted floats (`1e-05`, `1e+21`).
+- Raw newlines, quotes, braces and backslashes inside `<\|"\|>` strings.
+- `<\|tool_call>…<tool_call\|>` and `<channel\|>` text inside a string argument. These become special-token ids.
+- Array values whose strings contain `{`/`}` (llama.cpp#21384).
+- The exact 45-strings-plus-array input from ollama#18354.
+
+**Notes:**
+- **Text position.** The template renders an assistant message's text **after** its tool calls (`text-after-call`). Models also emit text before calls; the engine tests cover that.
+- **Official response template.** The `response_template` that Google ships in `tokenizer_config.json` matches names with `(?P<name>\w+)`. Hyphenated or dotted tool names (`get-weather`, `weather.get`), which are valid OpenAI names that the template renders verbatim, are therefore outside it.
+- **Not included: a thinking-on continuation after a tool response.** Its generation prompt is `<\|channel>thought\n`, inside the same model turn. Fixtures carry no conversation history, so adapters cannot rebuild that prompt, and the case was dropped until the spec has a history field.

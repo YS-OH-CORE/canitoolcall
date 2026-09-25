@@ -107,3 +107,24 @@ Because the tool and think markers are non-special added tokens, they are single
 - `truncated-in-json`
 - `think-no-open-tag` (Thinking-2507)
 - `marker-in-string` (an argument containing the literal text `</tool_call>`)
+
+## Fixture corpus (`fixtures/qwen3-hermes/`, 50 fixtures)
+
+Regenerate with `.venvs/transformers/bin/python scripts/fixtures/qwen3-hermes/build.py`. Add `--check` to confirm that the committed files are up to date. The script downloads only tokenizer and template files, at these pinned revisions:
+- Qwen3-0.6B `c1899de` (hybrid)
+- Qwen3-4B-Thinking-2507 `768f209`
+- Qwen3-4B-Instruct-2507 `cdbee75`
+
+Their templates are byte-identical to the 8B/32B/30B-A3B/235B siblings, which each fixture lists in `models`.
+
+| Source | Count | What |
+|---|---|---|
+| `template_render` | 36 | Official template, `apply_chat_template(tokenize=True)`. Output ids are cut at the first `generation_config` stop id. Covers thinking on and off (`enable_thinking=false` pre-fills an empty think block), Thinking-2507 (the prompt pre-fills `<think>\n`), and Instruct-2507. Truncated fixtures are a token prefix of a render. |
+| `engine_test` | 12 | vLLM `test_hermes_tool_parser.py` and `test_qwen3_reasoning_parser.py`, and SGLang `test_hermes_detector.py` and `TestQwen25Detector` (Apache-2.0, line-anchored). This includes the no-newline `<tool_call>{…}</tool_call>` form and two malformed outputs. |
+| `bug_report` | 2 | sglang#30480: truncation mid-arguments, and truncation at the `<tool_call>` opener. |
+
+**Conventions:**
+- **`expected`** holds the fields the template was *given*. The `\n` the template adds inside `<think>` and before `<tool_call>` is not part of them, so engines that keep it get `soft_pass`.
+- **`marker-in-arguments`** puts literal `<tool_call>…</tool_call>` and `<think>` text inside a JSON string. The tokenizer maps these to their added-token ids. The JSON is still open at the inner `</tool_call>`, so a correct parser keeps the whole string.
+- **Truncation.** A call cut by `max_tokens` must yield no call (`expected_error`, with accept `no_tool_calls`/`content_passthrough`). `truncated-second-parallel-call` keeps the first, complete call (the fix direction of sglang#30480). A cut inside `<think>` is reasoning, not content (this matches vLLM's own qwen3 reasoning tests).
+- **Multi-turn fixtures** carry only the generation prompt, not the conversation history. The spec has no history field yet, and for Qwen3 the generation prompt after a tool response is the same as after a user turn.
