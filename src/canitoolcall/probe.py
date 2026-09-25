@@ -1,9 +1,11 @@
 """Live probe: check a running OpenAI-compatible endpoint in about a minute.
 
 ``canitoolcall probe --base-url http://localhost:8000/v1 --model M`` sends a
-small set of scripted tool-use scenarios (single call, parallel calls, unicode
-and nested arguments, no-call answer, reasoning + call, multi-turn with a tool
-result), each non-streaming and streaming, and reports pass/fail per scenario.
+small set of scripted tool-use scenarios (single call, parallel calls, no-call
+answer, nested and unicode arguments, a no-argument tool, forced
+``tool_choice``, a follow-up after a tool result, reasoning + call), each
+non-streaming and streaming, and reports pass/fail per scenario plus a
+stream-vs-non-stream equivalence row per scenario.
 
 Unlike the offline suite this exercises the whole stack (template, sampling,
 parser, server), so outcomes depend on the model's behaviour. Checks are
@@ -11,18 +13,85 @@ therefore structural (a call to the right tool with schema-valid arguments,
 stream == non-stream shape, no marker leakage) rather than exact-text.
 
 Uses only the standard library HTTP client (``urllib``) so it runs anywhere;
-SSE is parsed by hand. No API key is ever logged or written to reports.
+SSE is parsed by hand. The API key is sent only in the ``Authorization``
+header: it is never logged, written to reports, or echoed in error details.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Literal
 
-from canitoolcall.results import ParseResult
+from canitoolcall import __version__
+from canitoolcall.results import ParsedToolCall, ParseResult
 
 ProbeStatus = Literal["pass", "fail", "error", "skip"]
+
+SCENARIO_CHECK = "scenario"
+"""``ProbeOutcome.check`` for a single request judged against its scenario."""
+EQUIVALENCE_CHECK = "stream_equals_nonstream"
+"""``ProbeOutcome.check`` for the structural stream-vs-non-stream comparison."""
+
+LEAK_MARKERS: tuple[str, ...] = (
+    # Every string below is quoted from docs/formats/<family>.md, which were
+    # rendered from the official templates/encoders. A server that returns one
+    # of them in content, reasoning, a tool name or an argument value is
+    # leaking the raw model format through its parser.
+    # qwen3-hermes / qwen3-xml / glm
+    "<tool_call>",
+    "</tool_call>",
+    "<function=",
+    "<parameter=",
+    "<arg_key>",
+    "<arg_value>",
+    # reasoning tags (qwen3, deepseek, glm, kimi K2, mistral)
+    "<think>",
+    "</think>",
+    "[THINK]",
+    "<|im_end|>",
+    # gpt-oss (Harmony)
+    "<|start|>",
+    "<|channel|>",
+    "<|message|>",
+    "<|constrain|>",
+    "<|call|>",
+    # deepseek
+    "<｜tool▁calls▁begin｜>",  # noqa: RUF001
+    "<｜tool▁call▁begin｜>",  # noqa: RUF001
+    "<｜tool▁sep｜>",  # noqa: RUF001
+    "<｜DSML｜",  # noqa: RUF001
+    # kimi K2 / K3
+    "<|tool_calls_section_begin|>",
+    "<|tool_call_begin|>",
+    "<|tool_call_argument_begin|>",
+    "<|open|>",
+    "<|close|>",
+    "<|sep|>",
+    # mistral
+    "[TOOL_CALLS]",
+    "[ARGS]",
+    # llama
+    "<|python_tag|>",
+    "<|eom_id|>",
+    "<|eot_id|>",
+    # gemma 4
+    "<|tool_call>",
+    "<tool_call|>",
+    '<|"|>',
+    "<|channel>",
+    "<channel|>",
+)
+
+
+# --------------------------------------------------------------------------- model
 
 
 @dataclass(frozen=True)
@@ -30,10 +99,16 @@ class ProbeExpectation:
     """Structural expectation for a scenario."""
 
     tool_names: tuple[str, ...] = ()
-    """Tools that must be called, in order; empty means no call expected."""
+    """Tools that must be called, in order (as a subsequence); empty means no call expected."""
     min_calls: int = 0
     required_argument_keys: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """Per tool name: argument keys every call to that tool must carry."""
     expect_reasoning: bool | None = None
+    """True: ``reasoning_content`` must be present; False: absent; None: not judged."""
+    expect_content: bool | None = None
+    """True: non-empty ``content`` required; False: must be empty; None: not judged."""
+    argument_contains: tuple[str, ...] = ()
+    """Substrings that must survive verbatim in some string argument value."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +121,19 @@ class Scenario:
     tool_choice: str | Mapping[str, Any] = "auto"
     extra_body: Mapping[str, Any] = field(default_factory=dict)
 
+    def request_body(self, model: str, *, stream: bool) -> dict[str, Any]:
+        """The /chat/completions JSON body for this scenario."""
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [dict(m) for m in self.messages],
+            "tools": [dict(t) for t in self.tools],
+            "tool_choice": self.tool_choice if isinstance(self.tool_choice, str) else dict(self.tool_choice),
+            "temperature": 0,
+            "stream": stream,
+        }
+        body.update(self.extra_body)
+        return body
+
 
 @dataclass(frozen=True)
 class ProbeOutcome:
@@ -55,6 +143,25 @@ class ProbeOutcome:
     detail: str | None
     latency_s: float
     observed: ParseResult | None = None
+    check: str = SCENARIO_CHECK
+    """:data:`SCENARIO_CHECK` or :data:`EQUIVALENCE_CHECK`."""
+    warnings: tuple[str, ...] = ()
+    """Protocol oddities that clients may trip over but that do not fail the scenario."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scenario_id": self.scenario_id,
+            "check": self.check,
+            "stream": self.stream,
+            "status": self.status,
+            "detail": self.detail,
+            "warnings": list(self.warnings),
+            "latency_s": round(self.latency_s, 3),
+            "observed": self.observed.to_dict() if self.observed is not None else None,
+        }
+
+
+_STATUSES: tuple[ProbeStatus, ...] = ("pass", "fail", "error", "skip")
 
 
 @dataclass(frozen=True)
@@ -63,17 +170,470 @@ class ProbeReport:
     model: str
     started_at: str
     outcomes: tuple[ProbeOutcome, ...]
+    finished_at: str | None = None
+
+    def summary(self) -> dict[str, int]:
+        counts: dict[str, int] = dict.fromkeys(_STATUSES, 0)
+        for o in self.outcomes:
+            counts[o.status] += 1
+        return counts
 
     def to_dict(self) -> dict[str, Any]:
-        raise NotImplementedError
+        return {
+            "canitoolcall_version": __version__,
+            "base_url": self.base_url,
+            "model": self.model,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "summary": self.summary(),
+            "outcomes": [o.to_dict() for o in self.outcomes],
+        }
 
     def render_text(self) -> str:
         """Human-readable table for the terminal."""
-        raise NotImplementedError
+        cells: dict[str, dict[str, str]] = {}
+        order: list[str] = []
+        for o in self.outcomes:
+            if o.scenario_id not in cells:
+                cells[o.scenario_id] = {}
+                order.append(o.scenario_id)
+            col = "equiv" if o.check == EQUIVALENCE_CHECK else ("stream" if o.stream else "nonstream")
+            cells[o.scenario_id][col] = o.status + ("*" if o.warnings else "")
+        headers = ("scenario", "non-stream", "stream", "stream=non-stream")
+        rows = [
+            (sid, cells[sid].get("nonstream", "-"), cells[sid].get("stream", "-"), cells[sid].get("equiv", "-"))
+            for sid in order
+        ]
+        widths = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h) for i, h in enumerate(headers)]
+
+        def line(values: Sequence[str]) -> str:
+            return "  ".join(v.ljust(w) for v, w in zip(values, widths, strict=True)).rstrip()
+
+        out = [f"canitoolcall probe  {self.base_url}  model={self.model}", "", line(headers)]
+        out.append(line(["-" * w for w in widths]))
+        out.extend(line(r) for r in rows)
+        s = self.summary()
+        out += ["", "summary: " + ", ".join(f"{s[k]} {k}" for k in _STATUSES)]
+        problems = [o for o in self.outcomes if o.status in ("fail", "error")]
+        if problems:
+            out += ["", "problems:"]
+            out += [f"  {_label(o)} {o.status}: {o.detail}" for o in problems]
+        warned = [o for o in self.outcomes if o.warnings]
+        if warned:
+            out += ["", "warnings (*):"]
+            out += [f"  {_label(o)}: {w}" for o in warned for w in o.warnings]
+        return "\n".join(out)
 
 
-BUILTIN_SCENARIOS: tuple[Scenario, ...] = ()
-"""The default scenario set (filled in by the probe builder)."""
+def _label(o: ProbeOutcome) -> str:
+    mode = "stream=non-stream" if o.check == EQUIVALENCE_CHECK else ("stream" if o.stream else "non-stream")
+    return f"{o.scenario_id} [{mode}]"
+
+
+# --------------------------------------------------------------------------- scenarios
+
+
+def _tool(name: str, description: str, properties: Mapping[str, Any], required: Sequence[str] = ()) -> dict[str, Any]:
+    params: dict[str, Any] = {"type": "object", "properties": dict(properties)}
+    if required:
+        params["required"] = list(required)
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": params}}
+
+
+_WEATHER = _tool(
+    "get_weather",
+    "Get the current weather for a city.",
+    {
+        "city": {"type": "string", "description": "City name, e.g. Paris"},
+        "unit": {"type": "string", "enum": ["c", "f"]},
+    },
+    ["city"],
+)
+_SERVER_TIME = _tool("get_server_time", "Return the server's current time. Takes no arguments.", {})
+_SAVE_NOTE = _tool(
+    "save_note",
+    "Save a note with a title and a body, stored verbatim.",
+    {"title": {"type": "string"}, "body": {"type": "string"}},
+    ["title", "body"],
+)
+_CREATE_EVENT = _tool(
+    "create_event",
+    "Create a calendar event.",
+    {
+        "title": {"type": "string"},
+        "start": {"type": "string", "description": "ISO 8601 date-time"},
+        "attendees": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "email": {"type": "string"}},
+                "required": ["name", "email"],
+            },
+        },
+        "location": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}, "room": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+    ["title", "attendees", "location"],
+)
+_RECORD_ANSWER = _tool(
+    "record_answer",
+    "Record the final answer to a question.",
+    {"answer": {"type": "string"}},
+    ["answer"],
+)
+
+
+def _user(text: str) -> dict[str, Any]:
+    return {"role": "user", "content": text}
+
+
+BUILTIN_SCENARIOS: tuple[Scenario, ...] = (
+    Scenario(
+        id="single-call",
+        description="One obvious call with a single string argument.",
+        messages=(_user("What's the weather in Paris right now? Use the tool."),),
+        tools=(_WEATHER,),
+        expect=ProbeExpectation(tool_names=("get_weather",), required_argument_keys={"get_weather": ("city",)}),
+    ),
+    Scenario(
+        id="parallel-calls",
+        description="Two independent calls to the same tool in one turn.",
+        messages=(
+            _user(
+                "Get the current weather in Paris and in Tokyo. Call get_weather once per city, "
+                "both calls in this single turn."
+            ),
+        ),
+        tools=(_WEATHER,),
+        expect=ProbeExpectation(
+            tool_names=("get_weather", "get_weather"), min_calls=2, required_argument_keys={"get_weather": ("city",)}
+        ),
+        extra_body={"parallel_tool_calls": True},
+    ),
+    Scenario(
+        id="no-call",
+        description="Tools are offered but the answer needs none: plain content, no calls.",
+        messages=(_user("What is 17 + 25? Reply with just the number and do not use any tool."),),
+        tools=(_WEATHER,),
+        expect=ProbeExpectation(expect_content=True),
+    ),
+    Scenario(
+        id="nested-args",
+        description="Arguments with an array of objects and a nested object, validated against the schema.",
+        messages=(
+            _user(
+                "Create an event titled 'Design review' starting 2026-10-01T15:00:00Z with attendees "
+                "Ana (ana@example.com) and Bo (bo@example.com), located in Berlin, room 4.12."
+            ),
+        ),
+        tools=(_CREATE_EVENT,),
+        expect=ProbeExpectation(
+            tool_names=("create_event",),
+            required_argument_keys={"create_event": ("title", "attendees", "location")},
+        ),
+    ),
+    Scenario(
+        id="unicode-args",
+        description="Non-ASCII, CJK and emoji must survive into the arguments byte-exact.",
+        messages=(
+            _user("Save a note titled 'Grüße aus Zürich' whose body is exactly: Café ☕ in 東京 — naïve résumé 🚀"),
+        ),
+        tools=(_SAVE_NOTE,),
+        expect=ProbeExpectation(
+            tool_names=("save_note",),
+            required_argument_keys={"save_note": ("title", "body")},
+            argument_contains=("東京", "🚀"),
+        ),
+    ),
+    Scenario(
+        id="empty-args",
+        description="A tool without parameters: arguments must still be a JSON object ('{}'), not ''.",
+        messages=(_user("What time is it on the server? Use the tool."),),
+        tools=(_SERVER_TIME,),
+        expect=ProbeExpectation(tool_names=("get_server_time",)),
+    ),
+    Scenario(
+        id="forced-tool-choice",
+        description="tool_choice names a function; the server must return a call to it.",
+        messages=(_user("Tell me something about Lisbon."),),
+        tools=(_WEATHER, _SAVE_NOTE),
+        tool_choice={"type": "function", "function": {"name": "get_weather"}},
+        expect=ProbeExpectation(tool_names=("get_weather",), required_argument_keys={"get_weather": ("city",)}),
+    ),
+    Scenario(
+        id="tool-result-followup",
+        description="After a tool result the model answers in content without calling again.",
+        messages=(
+            _user("What's the weather in Paris?"),
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_probe_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_probe_1", "content": '{"temp_c": 18, "sky": "clear"}'},
+        ),
+        tools=(_WEATHER,),
+        expect=ProbeExpectation(expect_content=True),
+    ),
+    Scenario(
+        id="reasoning-then-call",
+        description=(
+            "Reasoning (if the model has it) must arrive in reasoning_content, never as tags in content, "
+            "followed by a call."
+        ),
+        messages=(
+            _user(
+                "Think it through step by step: which number is larger, 9.11 or 9.9? "
+                "Then record the larger number with the record_answer tool."
+            ),
+        ),
+        tools=(_RECORD_ANSWER,),
+        expect=ProbeExpectation(tool_names=("record_answer",), required_argument_keys={"record_answer": ("answer",)}),
+    ),
+)
+"""The default scenario set."""
+
+
+# --------------------------------------------------------------------------- HTTP
+
+
+class ProbeRequestError(Exception):
+    """The request failed (transport, HTTP status, or an unreadable response)."""
+
+
+@dataclass(frozen=True)
+class ChatResponse:
+    """One /chat/completions exchange, accumulated into a :class:`ParseResult`."""
+
+    result: ParseResult
+    latency_s: float
+    finish_reason: str | None = None
+    problems: tuple[str, ...] = ()
+    """OpenAI-protocol violations that break clients (fail the scenario)."""
+    warnings: tuple[str, ...] = ()
+    """Protocol oddities some clients tolerate (reported, do not fail)."""
+
+
+def _endpoint(base_url: str) -> str:
+    return base_url.rstrip("/") + "/chat/completions"
+
+
+def safe_url(url: str) -> str:
+    """``url`` without userinfo, query or fragment (they may carry credentials)."""
+    p = urllib.parse.urlsplit(url)
+    host = p.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host + (f":{p.port}" if p.port else "")
+    return urllib.parse.urlunsplit((p.scheme, netloc, p.path, "", ""))
+
+
+def _redact(text: str, secret: str | None) -> str:
+    return text.replace(secret, "***") if secret else text
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+class _Accumulator:
+    """OpenAI-client-style stream accumulation (content/reasoning concatenated,
+    tool-call deltas merged by ``index``: name set once, arguments concatenated)."""
+
+    def __init__(self) -> None:
+        self.content: list[str] = []
+        self.reasoning: list[str] = []
+        self.calls: dict[int, dict[str, Any]] = {}
+        self.finish_reason: str | None = None
+        self.problems: list[str] = []
+        self.warnings: list[str] = []
+
+    def _note(self, bucket: list[str], msg: str) -> None:
+        if msg not in bucket:
+            bucket.append(msg)
+
+    def add_chunk(self, chunk: Mapping[str, Any]) -> None:
+        if "error" in chunk:
+            raise ProbeRequestError(f"error event in stream: {json.dumps(chunk['error'], ensure_ascii=False)[:300]}")
+        for choice in chunk.get("choices") or ():
+            if choice.get("index", 0) != 0:
+                continue
+            delta = choice.get("delta") or {}
+            if (c := _text(delta.get("content"))) is not None:
+                self.content.append(c)
+            reasoning = _text(delta.get("reasoning_content"))
+            if reasoning is None:
+                reasoning = _text(delta.get("reasoning"))
+            if reasoning is not None:
+                self.reasoning.append(reasoning)
+            for tc in delta.get("tool_calls") or ():
+                self._add_tool_delta(tc)
+            if choice.get("finish_reason"):
+                self.finish_reason = choice["finish_reason"]
+
+    def _add_tool_delta(self, tc: Mapping[str, Any]) -> None:
+        idx = tc.get("index")
+        if not isinstance(idx, int):
+            self._note(self.problems, "tool-call delta without an integer 'index' (clients cannot merge deltas)")
+            last = max(self.calls, default=None)
+            if last is None or (tc.get("id") is not None and tc.get("id") != self.calls[last]["id"]):
+                idx = len(self.calls)
+            else:
+                idx = last
+        slot = self.calls.setdefault(idx, {"id": None, "name": None, "args": []})
+        if tc.get("id"):
+            if slot["id"] is not None and slot["id"] != tc["id"]:
+                self._note(self.warnings, f"tool call {idx}: id changed mid-stream")
+            slot["id"] = slot["id"] or tc["id"]
+        fn = tc.get("function") or {}
+        name = fn.get("name")
+        if name:
+            if slot["name"] is None:
+                slot["name"] = name
+            elif name == slot["name"]:
+                self._note(
+                    self.warnings,
+                    f"tool call {idx}: name repeated in a later delta "
+                    "(clients that concatenate name fragments see a doubled name)",
+                )
+            else:
+                self._note(self.problems, f"tool call {idx}: conflicting names {slot['name']!r} / {name!r}")
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            slot["args"].append(args)
+        elif args is not None:
+            self._note(self.problems, f"tool call {idx}: arguments delta is {type(args).__name__}, not a string")
+            slot["args"].append(json.dumps(args, ensure_ascii=False))
+
+    def finish(self, latency_s: float) -> ChatResponse:
+        calls: list[ParsedToolCall] = []
+        for idx in sorted(self.calls):
+            slot = self.calls[idx]
+            if slot["name"] is None:
+                self._note(self.problems, f"tool call {idx}: no function name in any delta")
+            if slot["id"] is None:
+                self._note(self.warnings, f"tool call {idx}: no id (needed to send the tool result back)")
+            calls.append(ParsedToolCall(slot["name"] or "", "".join(slot["args"])))
+        _check_finish_reason(self.finish_reason, bool(calls), self.warnings)
+        return ChatResponse(
+            result=ParseResult(
+                content="".join(self.content) or None,
+                reasoning_content="".join(self.reasoning) or None,
+                tool_calls=tuple(calls),
+            ),
+            latency_s=latency_s,
+            finish_reason=self.finish_reason,
+            problems=tuple(self.problems),
+            warnings=tuple(self.warnings),
+        )
+
+
+def _check_finish_reason(reason: str | None, has_calls: bool, warnings: list[str]) -> None:
+    if has_calls and reason != "tool_calls":
+        warnings.append(f"finish_reason is {reason!r} although tool calls were returned (OpenAI sends 'tool_calls')")
+
+
+def iter_sse_data(lines: Iterable[bytes]) -> Iterator[str]:
+    """Yield the ``data`` payload of each server-sent event (multi-line data joined by ``\\n``)."""
+    data: list[str] = []
+    for raw in lines:
+        line = raw.decode("utf-8").rstrip("\r\n")
+        if not line:
+            if data:
+                yield "\n".join(data)
+                data = []
+            continue
+        if line.startswith(":"):
+            continue
+        name, _, value = line.partition(":")
+        if name == "data":
+            data.append(value[1:] if value.startswith(" ") else value)
+    if data:
+        yield "\n".join(data)
+
+
+def _parse_message(payload: Mapping[str, Any], latency_s: float) -> ChatResponse:
+    if "error" in payload and not payload.get("choices"):
+        raise ProbeRequestError(f"error response: {json.dumps(payload['error'], ensure_ascii=False)[:300]}")
+    choices = payload.get("choices") or []
+    if not choices:
+        raise ProbeRequestError("response has no choices")
+    choice = choices[0]
+    msg = choice.get("message") or {}
+    problems: list[str] = []
+    warnings: list[str] = []
+    calls: list[ParsedToolCall] = []
+    for i, tc in enumerate(msg.get("tool_calls") or ()):
+        fn = tc.get("function") or {}
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            problems.append(f"tool call {i}: arguments is {type(args).__name__}, not a JSON string")
+            args = "" if args is None else json.dumps(args, ensure_ascii=False)
+        if not tc.get("id"):
+            warnings.append(f"tool call {i}: no id (needed to send the tool result back)")
+        if not fn.get("name"):
+            problems.append(f"tool call {i}: no function name")
+        calls.append(ParsedToolCall(fn.get("name") or "", args))
+    reasoning = _text(msg.get("reasoning_content"))
+    if reasoning is None:
+        reasoning = _text(msg.get("reasoning"))
+    reason = choice.get("finish_reason")
+    _check_finish_reason(reason, bool(calls), warnings)
+    return ChatResponse(
+        result=ParseResult(content=_text(msg.get("content")), reasoning_content=reasoning, tool_calls=tuple(calls)),
+        latency_s=latency_s,
+        finish_reason=reason,
+        problems=tuple(problems),
+        warnings=tuple(warnings),
+    )
+
+
+def chat_response(
+    base_url: str, model: str, scenario: Scenario, *, stream: bool, api_key: str | None = None, timeout_s: float = 60.0
+) -> ChatResponse:
+    """One /chat/completions request with protocol diagnostics.
+
+    Raises :class:`ProbeRequestError` on transport/HTTP failures; its message
+    never contains ``api_key``.
+    """
+    body = json.dumps(scenario.request_body(model, stream=stream), ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if stream else "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(_endpoint(base_url), data=body, headers=headers, method="POST")
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            ctype = resp.headers.get("Content-Type", "")
+            if stream and "text/event-stream" in ctype:
+                acc = _Accumulator()
+                for data in iter_sse_data(resp):
+                    if data.strip() == "[DONE]":
+                        break
+                    acc.add_chunk(json.loads(data))
+                return acc.finish(time.monotonic() - t0)
+            payload = json.loads(resp.read().decode("utf-8"))
+            out = _parse_message(payload, time.monotonic() - t0)
+            if stream:
+                note = f"stream=true was ignored (Content-Type {ctype or 'missing'!r}, not text/event-stream)"
+                return ChatResponse(out.result, out.latency_s, out.finish_reason, (*out.problems, note), out.warnings)
+            return out
+    except urllib.error.HTTPError as e:
+        snippet = e.read().decode("utf-8", "replace")[:300] if e.fp is not None else ""
+        raise ProbeRequestError(_redact(f"HTTP {e.code} {e.reason}: {snippet}".strip(), api_key)) from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise ProbeRequestError(_redact(f"request failed: {e}", api_key)) from None
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ProbeRequestError(f"unreadable response: {e}") from None
 
 
 def chat(
@@ -84,12 +644,174 @@ def chat(
     Streaming responses are accumulated OpenAI-client style (content and
     reasoning deltas concatenated; tool-call deltas merged by index).
     """
-    raise NotImplementedError
+    r = chat_response(base_url, model, scenario, stream=stream, api_key=api_key, timeout_s=timeout_s)
+    return r.result, r.latency_s
 
 
-def evaluate(scenario: Scenario, result: ParseResult) -> tuple[ProbeStatus, str | None]:
-    """Judge one observed result against ``scenario.expect``."""
-    raise NotImplementedError
+# --------------------------------------------------------------------------- judging
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield str(k)
+            yield from _strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v)
+
+
+def _find_leaks(field_name: str, texts: Iterable[str], markers: Sequence[str]) -> list[str]:
+    found = sorted({m for t in texts for m in markers if m in t})
+    return [f"marker {m!r} leaked into {field_name}" for m in found]
+
+
+def _is_subsequence(needle: Sequence[str], hay: Sequence[str]) -> bool:
+    it = iter(hay)
+    return all(any(n == h for h in it) for n in needle)
+
+
+def evaluate(
+    scenario: Scenario, result: ParseResult, *, markers: Sequence[str] = LEAK_MARKERS
+) -> tuple[ProbeStatus, str | None]:
+    """Judge one observed result against ``scenario.expect``.
+
+    Always checked: every call names an offered tool, its arguments decode to
+    a JSON object valid against the tool's ``parameters`` schema, no format
+    marker leaks into content/reasoning/names/argument values, and no U+FFFD
+    replacement character appears. Then the scenario's expectation.
+    """
+    if result.exception:
+        return "fail", f"exception: {result.exception}"
+    exp = scenario.expect
+    problems: list[str] = []
+    offered = {t["function"]["name"]: t["function"].get("parameters") or {} for t in scenario.tools}
+    names = [c.name for c in result.tool_calls]
+    decoded: list[tuple[str, dict[str, Any]]] = []
+    for i, call in enumerate(result.tool_calls):
+        if call.name not in offered:
+            problems.append(f"call {i} names {call.name!r}, which is not an offered tool")
+        try:
+            args = call.arguments()
+        except json.JSONDecodeError:
+            problems.append(f"call {i} ({call.name}) arguments are not valid JSON: {call.arguments_raw[:80]!r}")
+            continue
+        if not isinstance(args, dict):
+            problems.append(f"call {i} ({call.name}) arguments are {type(args).__name__}, not a JSON object")
+            continue
+        decoded.append((call.name, args))
+        if call.name in offered:
+            problems += [f"call {i} ({call.name}): {m}" for m in _schema_errors(args, offered[call.name])]
+
+    problems += _find_leaks("content", [result.content or ""], markers)
+    problems += _find_leaks("reasoning_content", [result.reasoning_content or ""], markers)
+    problems += _find_leaks("a tool name", names, markers)
+    problems += _find_leaks("tool arguments", [s for _, a in decoded for s in _strings(a)], markers)
+    all_text = [result.content or "", result.reasoning_content or "", *(c.arguments_raw for c in result.tool_calls)]
+    if any("�" in t for t in all_text):
+        problems.append("U+FFFD replacement character in output (broken UTF-8 decoding)")
+
+    if exp.tool_names:
+        need = max(exp.min_calls, len(exp.tool_names))
+        if len(names) < need:
+            problems.append(f"expected at least {need} tool call(s) {list(exp.tool_names)}, got {names}")
+        elif not _is_subsequence(exp.tool_names, names):
+            problems.append(f"expected calls {list(exp.tool_names)} in order, got {names}")
+    elif names:
+        problems.append(f"expected no tool call, got {names}")
+    for tool, keys in exp.required_argument_keys.items():
+        for name, args in decoded:
+            if name == tool and (missing := [k for k in keys if k not in args]):
+                problems.append(f"{tool} call is missing argument(s) {missing}")
+    if exp.argument_contains:
+        values = [s for _, a in decoded for s in _strings(a)]
+        lost = [s for s in exp.argument_contains if not any(s in v for v in values)]
+        if lost and decoded:
+            problems.append(f"argument values lost {lost}; got {[a for _, a in decoded]}")
+    if exp.expect_content is True and not (result.content or "").strip():
+        problems.append("expected a content answer, got none")
+    if exp.expect_content is False and (result.content or "").strip():
+        problems.append(f"expected no content, got {(result.content or '')[:80]!r}")
+    if exp.expect_reasoning is True and not result.reasoning_content:
+        problems.append("expected reasoning_content, got none")
+    if exp.expect_reasoning is False and result.reasoning_content:
+        problems.append("expected no reasoning_content")
+
+    if problems:
+        return "fail", "; ".join(problems)
+    return "pass", _describe(result)
+
+
+def _describe(result: ParseResult) -> str:
+    parts = []
+    if result.tool_calls:
+        calls = []
+        for c in result.tool_calls:
+            try:
+                args = c.arguments()
+                keys = ",".join(args) if isinstance(args, dict) else "?"
+            except json.JSONDecodeError:
+                keys = "?"
+            calls.append(f"{c.name}({keys})")
+        parts.append(" ".join(calls))
+    if result.content and result.content.strip():
+        parts.append(f"content {len(result.content)} chars")
+    parts.append("reasoning_content: " + ("yes" if result.reasoning_content else "no"))
+    return "; ".join(parts)
+
+
+def _schema_errors(args: Mapping[str, Any], schema: Mapping[str, Any]) -> list[str]:
+    import jsonschema  # lazy: main env only
+
+    validator = jsonschema.Draft202012Validator(schema)
+    return [f"{e.json_path}: {e.message}" for e in validator.iter_errors(args)][:3]
+
+
+def _shape(result: ParseResult) -> dict[str, Any]:
+    calls = []
+    for c in result.tool_calls:
+        try:
+            args = c.arguments()
+            keys: Any = sorted(args) if isinstance(args, dict) else "<non-object>"
+        except json.JSONDecodeError:
+            keys = "<invalid json>"
+        calls.append((c.name, keys))
+    return {
+        "tool_calls": calls,
+        "content": bool((result.content or "").strip()),
+        "reasoning_content": bool(result.reasoning_content),
+    }
+
+
+def compare_modes(nonstream: ParseResult, stream: ParseResult) -> tuple[ProbeStatus, str | None]:
+    """Structural stream-vs-non-stream comparison: tool names and argument keys
+    in order, and presence of content and reasoning. Values are not compared
+    (two sampled generations may word things differently)."""
+    a, b = _shape(nonstream), _shape(stream)
+    diffs = [f"{k}: non-stream {a[k]!r} vs stream {b[k]!r}" for k in a if a[k] != b[k]]
+    if diffs:
+        return "fail", "; ".join(diffs) + " (both sampled at temperature 0; rerun to rule out nondeterminism)"
+    return "pass", None
+
+
+# --------------------------------------------------------------------------- driver
+
+
+def _run_one(
+    base_url: str, model: str, scenario: Scenario, stream: bool, api_key: str | None, timeout_s: float
+) -> ProbeOutcome:
+    try:
+        resp = chat_response(base_url, model, scenario, stream=stream, api_key=api_key, timeout_s=timeout_s)
+    except ProbeRequestError as e:
+        return ProbeOutcome(scenario.id, stream, "error", _redact(str(e), api_key), 0.0)
+    status, detail = evaluate(scenario, resp.result)
+    if resp.problems:
+        protocol = "; ".join(resp.problems)
+        detail = f"{protocol}; {detail}" if status == "fail" else protocol
+        status = "fail"
+    return ProbeOutcome(scenario.id, stream, status, detail, resp.latency_s, resp.result, warnings=resp.warnings)
 
 
 def probe(
@@ -100,6 +822,29 @@ def probe(
     scenarios: Sequence[Scenario] | None = None,
     stream_modes: Sequence[bool] = (False, True),
     timeout_s: float = 60.0,
+    concurrency: int = 4,
 ) -> ProbeReport:
-    """Run every scenario in every stream mode against the endpoint."""
-    raise NotImplementedError
+    """Run every scenario in every stream mode against the endpoint.
+
+    Requests run on ``concurrency`` threads; the report order is fixed
+    (scenario order, then non-stream, stream, and the equivalence row when
+    both modes ran).
+    """
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    todo = [(sc, mode) for sc in (BUILTIN_SCENARIOS if scenarios is None else scenarios) for mode in stream_modes]
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        done = list(pool.map(lambda job: _run_one(base_url, model, job[0], job[1], api_key, timeout_s), todo))
+
+    outcomes: list[ProbeOutcome] = []
+    for sc in BUILTIN_SCENARIOS if scenarios is None else scenarios:
+        mine = {o.stream: o for (s, _), o in zip(todo, done, strict=True) if s is sc}
+        outcomes += [mine[m] for m in stream_modes]
+        if False in mine and True in mine:
+            ns, st = mine[False], mine[True]
+            if ns.observed is None or st.observed is None:
+                outcomes.append(ProbeOutcome(sc.id, True, "skip", "a request errored", 0.0, check=EQUIVALENCE_CHECK))
+            else:
+                status, detail = compare_modes(ns.observed, st.observed)
+                outcomes.append(ProbeOutcome(sc.id, True, status, detail, 0.0, check=EQUIVALENCE_CHECK))
+    finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return ProbeReport(safe_url(base_url), model, started, tuple(outcomes), finished_at=finished)
