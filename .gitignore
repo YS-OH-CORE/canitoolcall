@@ -4,8 +4,10 @@
 # Engine source clones, compiled harnesses, vocab-only GGUFs (built by scripts/engines/*.sh)
 .engines/
 
-# Run outputs (the matrix site is generated from these; publish via CI artifacts)
-/results/
+# Run outputs (the matrix site is generated from these; publish via CI artifacts).
+# Dated snapshots (results/YYYY-MM-DD/, gzipped) are committed on purpose.
+/results/*
+!/results/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 /site/_build/
 
 # Python
