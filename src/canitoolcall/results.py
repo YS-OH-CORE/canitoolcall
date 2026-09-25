@@ -48,8 +48,10 @@ class ParsedToolCall:
     """One tool call as the engine returned it."""
 
     name: str
-    arguments_raw: str
-    """Arguments exactly as returned (OpenAI format: JSON text)."""
+    arguments_raw: str | None
+    """Arguments exactly as returned (OpenAI format: JSON text). ``None`` only
+    when an engine returned no arguments at all; the checks treat that as
+    invalid JSON."""
 
     def arguments(self) -> Any:
         """Decode ``arguments_raw``; raises ``json.JSONDecodeError`` if invalid.
@@ -57,6 +59,8 @@ class ParsedToolCall:
         No leniency here: an empty string is invalid JSON. Whether an engine
         may return ``""`` for a no-argument call is a policy of the checks.
         """
+        if self.arguments_raw is None:
+            raise json.JSONDecodeError("no arguments", "", 0)
         return json.loads(self.arguments_raw)
 
 
@@ -87,11 +91,82 @@ class ParseResult:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> ParseResult:
+        """Decode a parse (e.g. from a worker reply); raises ``TypeError`` on wrong field types."""
+        if not isinstance(d, Mapping):
+            raise TypeError(f"parse result must be an object, got {type(d).__name__}")
+        for key in ("content", "reasoning_content", "exception"):
+            if d.get(key) is not None and not isinstance(d[key], str):
+                raise TypeError(f"{key} must be a string or null, got {type(d[key]).__name__}")
+        calls = d.get("tool_calls") or []
+        if not isinstance(calls, list):
+            raise TypeError(f"tool_calls must be a list, got {type(calls).__name__}")
+        tool_calls: list[ParsedToolCall] = []
+        for i, t in enumerate(calls):
+            if not isinstance(t, Mapping):
+                raise TypeError(f"tool_calls[{i}] must be an object, got {type(t).__name__}")
+            name, args = t.get("name"), t.get("arguments_raw")
+            if not isinstance(name, str):
+                raise TypeError(f"tool_calls[{i}].name must be a string, got {type(name).__name__}")
+            # A non-string arguments_raw (null from an engine's Optional field) is kept
+            # as is: the checks report it as invalid arguments instead of crashing.
+            tool_calls.append(ParsedToolCall(name, args))
         return cls(
             content=d.get("content"),
             reasoning_content=d.get("reasoning_content"),
-            tool_calls=tuple(ParsedToolCall(t["name"], t["arguments_raw"]) for t in d.get("tool_calls", [])),
+            tool_calls=tuple(tool_calls),
             exception=d.get("exception"),
+        )
+
+
+class StreamAccumulator:
+    """Accumulates streamed deltas the way an OpenAI client does (DESIGN.md rule 8).
+
+    Mirrors openai-python's ``accumulate_delta``: content and reasoning deltas
+    are concatenated; tool-call deltas merge by ``index`` and their string
+    fields (``name``, ``arguments``) are concatenated. A name sent once stays
+    as is; a name the engine re-sends shows up repeated, as a client sees it.
+    Every adapter uses this one implementation.
+    """
+
+    def __init__(self) -> None:
+        self._content: list[str] = []
+        self._reasoning: list[str] = []
+        self._calls: dict[int, list[str]] = {}
+
+    def add_content(self, text: str | None) -> None:
+        if text:
+            self._content.append(text)
+
+    def add_reasoning(self, text: str | None) -> None:
+        if text:
+            self._reasoning.append(text)
+
+    def add_tool_call(self, index: int, name: str | None = None, arguments: str | None = None) -> None:
+        """Merge one tool-call delta into the call at ``index``."""
+        slot = self._calls.setdefault(int(index), ["", ""])
+        if name:
+            slot[0] += name
+        if arguments:
+            slot[1] += arguments
+
+    def append_tool_call(self, name: str, arguments: str) -> None:
+        """A complete call sent as one delta with the next free index."""
+        self.add_tool_call(max(self._calls, default=-1) + 1, name, arguments)
+
+    def add_openai_delta(self, delta: Mapping[str, Any]) -> None:
+        """Merge one ``choices[].delta`` object of an OpenAI chat-completion chunk."""
+        self.add_content(delta.get("content"))
+        self.add_reasoning(delta.get("reasoning_content") or delta.get("reasoning"))
+        for tc in delta.get("tool_calls") or ():
+            fn = tc.get("function") or {}
+            self.add_tool_call(int(tc.get("index") or 0), fn.get("name"), fn.get("arguments"))
+
+    def result(self, exception: str | None = None) -> ParseResult:
+        return ParseResult(
+            content="".join(self._content) or None,
+            reasoning_content="".join(self._reasoning) or None,
+            tool_calls=tuple(ParsedToolCall(n, a) for _, (n, a) in sorted(self._calls.items())),
+            exception=exception,
         )
 
 
@@ -102,6 +177,11 @@ class Observation:
     nonstream: ParseResult
     streams: Mapping[str, ParseResult]
     """Keyed by chunking strategy id."""
+    synthetic: frozenset[str] = field(default=frozenset(), compare=False)
+    """Strategy ids in ``streams`` this engine cannot produce (``char:*``, and
+    multi-token deltas on one-token-per-step engines). They are checked and
+    reported but never count toward the case status. Not serialized: the run
+    records them in ``run.synthetic_strategies``."""
 
     def to_dict(self) -> dict[str, Any]:
         return {"nonstream": self.nonstream.to_dict(), "streams": {k: v.to_dict() for k, v in self.streams.items()}}
@@ -195,6 +275,15 @@ class RunInfo:
     fixtures_digest: str
     strategies: tuple[str, ...]
     normalization: str
+    synthetic_strategies: tuple[str, ...] = ()
+    """Strategies that ran but do not count toward case status for this engine
+    (see :func:`canitoolcall.chunking.synthetic_strategies`)."""
+
+
+def _umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._+-]")
@@ -233,7 +322,11 @@ class RunResults:
                 "commit": self.engine.commit,
                 "details": dict(self.engine.details),
             },
-            "run": {**vars(self.run), "strategies": list(self.run.strategies)},
+            "run": {
+                **vars(self.run),
+                "strategies": list(self.run.strategies),
+                "synthetic_strategies": list(self.run.synthetic_strategies),
+            },
             "cases": [c.to_dict() for c in self.cases],
             "summary": self.summary(),
         }
@@ -247,7 +340,13 @@ class RunResults:
         return cls(
             canitoolcall_version=d["canitoolcall_version"],
             engine=EngineInfo(e["name"], e["version"], e.get("commit"), e.get("details") or {}),
-            run=RunInfo(**{**r, "strategies": tuple(r["strategies"])}),
+            run=RunInfo(
+                **{
+                    **r,
+                    "strategies": tuple(r["strategies"]),
+                    "synthetic_strategies": tuple(r.get("synthetic_strategies") or ()),
+                }
+            ),
             cases=tuple(CaseResult.from_dict(c) for c in d["cases"]),
         )
 
@@ -267,6 +366,8 @@ class RunResults:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(text)
+            # mkstemp creates 0600; results are meant to be shared, so use the umask like open() would.
+            os.chmod(tmp, 0o666 & ~_umask())
             os.replace(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)

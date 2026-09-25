@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from canitoolcall.adapters.base import Adapter, ReplayInput, Support, ToolSpec
+from canitoolcall.chunking import TokensPerStep
 from canitoolcall.results import ParsedToolCall, ParseResult
 
 THINK_OPEN, THINK_CLOSE, CALL_OPEN, CALL_CLOSE = "<think>", "</think>", "<tool_call>", "</tool_call>"
@@ -289,3 +290,9 @@ class ReferenceAdapter(Adapter):
 
     def parse_stream_text(self, raw: ReplayInput, deltas: Sequence[str], tools: Sequence[ToolSpec]) -> ParseResult:
         return self._run(raw, deltas, self._faults(raw))
+
+
+class OneTokenReferenceAdapter(ReferenceAdapter):
+    """The reference adapter as an engine whose server streams one token per event (like Ollama)."""
+
+    tokens_per_step: ClassVar[TokensPerStep] = "one"

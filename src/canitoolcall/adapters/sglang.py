@@ -39,7 +39,9 @@ stop token id that ended generation to the finishing step and lets SGLang's
 ``trim_matched_stop`` decide what survives. For gpt-oss (Harmony) the stop is
 ``<|call|>`` when the last message has a recipient (``to=``), else
 ``<|return|>``. What was appended and what SGLang kept is recorded in
-``parser_config["stop"]``.
+``parser_config["stop"]``. Fixtures tagged ``truncated`` were cut by
+``max_tokens``: nothing is appended and every finish-aware call gets SGLang's
+``FINISH_LENGTH`` reason (``{"type": "length", ...}``).
 """
 
 from __future__ import annotations
@@ -49,12 +51,20 @@ import hashlib
 import importlib
 import json
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
-from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
+from canitoolcall.adapters.base import (
+    Adapter,
+    AdapterUnavailable,
+    ReplayInput,
+    Support,
+    ToolSpec,
+    trusts_remote_code,
+)
 from canitoolcall.results import ParsedToolCall, ParseResult
+from canitoolcall.results import StreamAccumulator as BaseStreamAccumulator
 
 # --------------------------------------------------------------------------- parser map
 
@@ -165,29 +175,8 @@ def _mod(name: str) -> Any:
 # --------------------------------------------------------------------------- stream accumulation
 
 
-@dataclass
-class StreamAccumulator:
-    """Accumulates deltas the way an OpenAI client does (DESIGN.md rule 8)."""
-
-    content: list[str] = field(default_factory=list)
-    reasoning: list[str] = field(default_factory=list)
-    calls: dict[int, list[str]] = field(default_factory=dict)
-    """tool index -> [name, arguments]"""
-
-    def add_content(self, text: str | None) -> None:
-        if text:
-            self.content.append(text)
-
-    def add_reasoning(self, text: str | None) -> None:
-        if text:
-            self.reasoning.append(text)
-
-    def add_tool_call(self, index: int, name: str | None, arguments: str | None) -> None:
-        slot = self.calls.setdefault(index, ["", ""])
-        if name and not slot[0]:
-            slot[0] = name
-        if arguments:
-            slot[1] += arguments
+class StreamAccumulator(BaseStreamAccumulator):
+    """The shared OpenAI-client accumulator (DESIGN.md rule 8), fed SGLang's SSE chunks."""
 
     def add_sse(self, chunk: str) -> None:
         """Decode one ``data: {...}`` server-sent event from SGLang and accumulate it."""
@@ -199,20 +188,7 @@ class StreamAccumulator:
                 continue
             payload = json.loads(body)
             for choice in payload.get("choices") or ():
-                delta = choice.get("delta") or {}
-                self.add_content(delta.get("content"))
-                self.add_reasoning(delta.get("reasoning_content"))
-                for tc in delta.get("tool_calls") or ():
-                    fn = tc.get("function") or {}
-                    self.add_tool_call(int(tc.get("index") or 0), fn.get("name"), fn.get("arguments"))
-
-    def result(self, exception: str | None = None) -> ParseResult:
-        return ParseResult(
-            content="".join(self.content) or None,
-            reasoning_content="".join(self.reasoning) or None,
-            tool_calls=tuple(ParsedToolCall(n, a) for _, (n, a) in sorted(self.calls.items())),
-            exception=exception,
-        )
+                self.add_openai_delta(choice.get("delta") or {})
 
 
 # --------------------------------------------------------------------------- per-model state
@@ -242,8 +218,20 @@ class _StopPlan:
     token_id: int | None
     appended: bool
     rule: str
+    length: int | None = None
+    """Output length when generation hit ``max_tokens`` (``FINISH_LENGTH``); None for a stop."""
+
+    @property
+    def finish_type(self) -> str:
+        return "length" if self.length is not None else "stop"
 
     def finish_reason(self) -> dict[str, Any]:
+        """A fresh ``finish_reason`` dict (``FINISH_LENGTH``/``FINISH_MATCHED_TOKEN.to_json()``).
+
+        Fresh on every call: ``_process_tool_calls`` mutates the dict it gets.
+        """
+        if self.length is not None:
+            return {"type": "length", "length": self.length}
         return {"type": "stop", "matched": self.token_id}
 
 
@@ -363,7 +351,7 @@ class SglangAdapter(Adapter):
                 "revision": ctx.tokenizer_revision,
                 "class": type(ctx.tokenizer).__name__,
                 "loader": "sglang.srt.utils.hf_transformers_utils.get_tokenizer(revision=, tokenizer_revision=)",
-                "trust_remote_code": True,
+                "trust_remote_code": trusts_remote_code(ctx.tokenizer_repo, ctx.tokenizer_revision),
             },
             "tokenizer_mode": raw.tokenizer_mode,
             "hf_config": (
@@ -396,6 +384,7 @@ class SglangAdapter(Adapter):
                 "id": rp.stop.token_id,
                 "rule": rp.stop.rule,
                 "appended": rp.stop.appended,
+                "finish_reason": rp.stop.finish_type,
                 "kept_by_engine": bool(kept),
             },
             "notes": rp.notes,
@@ -475,7 +464,9 @@ class SglangAdapter(Adapter):
         # ByteLevel decoder) read tokenizer.json at ``tokenizer_revision``, i.e.
         # "main" from the local cache. Pinning both models a server whose
         # "main" is the pinned revision, and keeps the fixes working offline.
-        tok = get_tokenizer(repo, trust_remote_code=True, revision=revision, tokenizer_revision=revision)
+        tok = get_tokenizer(
+            repo, trust_remote_code=trusts_remote_code(repo, revision), revision=revision, tokenizer_revision=revision
+        )
         hf_config, config_error = self._hf_config(raw.model, revision if repo == raw.model else None)
         template = getattr(tok, "chat_template", None)
         if not isinstance(template, str):
@@ -579,7 +570,7 @@ class SglangAdapter(Adapter):
             sampling=sampling,
             prompt_tail=tail,
             prompt_tail_source=tail_source,
-            stop=self._stop_plan(ctx, raw),
+            stop=self._stop_plan(ctx, raw, self.units(raw)),
             notes=notes,
         )
 
@@ -609,7 +600,13 @@ class SglangAdapter(Adapter):
         return [], "none"
 
     @staticmethod
-    def _stop_plan(ctx: _ModelContext, raw: ReplayInput) -> _StopPlan:
+    def _stop_plan(ctx: _ModelContext, raw: ReplayInput, units: Sequence[int]) -> _StopPlan:
+        if raw.truncated:
+            # Cut by max_tokens: the model never emitted a stop token, and the
+            # scheduler finishes the request with FINISH_LENGTH.
+            return _StopPlan(
+                None, None, appended=False, rule="truncated fixture: finish_reason length", length=len(units)
+            )
         tok = ctx.tokenizer
 
         def tid(token: str) -> int | None:
@@ -725,7 +722,7 @@ class SglangAdapter(Adapter):
         has_tool_calls: dict[int, bool] = {}
         content: dict[str, Any] = {"meta_info": {"id": REQUEST_ID}, "text": ""}
         for i, step_text in enumerate(deltas):
-            finish_type = "stop" if i == len(deltas) - 1 else None
+            finish_type = rp.stop.finish_type if i == len(deltas) - 1 else None
             content["text"] += step_text
             delta: Any = step_text
             if srv.reasoning_parser and req.separate_reasoning:

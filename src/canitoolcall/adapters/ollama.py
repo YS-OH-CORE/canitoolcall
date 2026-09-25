@@ -54,8 +54,9 @@ from pathlib import Path
 from typing import IO, Any, ClassVar
 
 from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
+from canitoolcall.chunking import TokensPerStep
 from canitoolcall.fixtures import repo_root
-from canitoolcall.results import ParsedToolCall, ParseResult
+from canitoolcall.results import ParsedToolCall, ParseResult, StreamAccumulator
 
 BIN_DIR_ENV = "CANITOOLCALL_OLLAMA_BIN_DIR"
 """Directory holding ``ctcreplay`` and ``ctc-detok`` (default ``.engines/ollama/bin``)."""
@@ -231,23 +232,14 @@ def accumulate_nonstream(streams_events: Sequence[Mapping[str, Any]], has_tools:
 
 def accumulate_stream(streams_events: Sequence[Mapping[str, Any]]) -> ParseResult:
     """An OpenAI client reading Ollama's streamed chunks: deltas concatenated, tool calls merged by index."""
-    content: list[str] = []
-    thinking: list[str] = []
-    by_index: dict[int, list[str]] = {}
+    acc = StreamAccumulator()
     for e in streams_events:
-        content.append(e["content"])
-        thinking.append(e["thinking"])
+        acc.add_content(e["content"])
+        acc.add_reasoning(e["thinking"])
         for tc in e["tool_calls"]:
-            idx = int(tc.get("index", 0))
             fn = tc["function"]
-            if idx not in by_index:
-                by_index[idx] = [fn["name"], fn["arguments"]]
-            else:
-                by_index[idx][1] += fn["arguments"]
-    calls = tuple(ParsedToolCall(name, args) for _, (name, args) in sorted(by_index.items()))
-    return ParseResult(
-        content=_as_text("".join(content)), reasoning_content=_as_text("".join(thinking)), tool_calls=calls
-    )
+            acc.add_tool_call(int(tc.get("index", 0)), fn["name"], fn["arguments"])
+    return acc.result()
 
 
 class HarnessError(RuntimeError):
@@ -341,6 +333,8 @@ class _ParserInfo:
 class OllamaAdapter(Adapter):
     name: ClassVar[str] = "ollama"
     pinned_version: ClassVar[str] = "7af393188defd52d370464de0d2064649cab9b41"
+    tokens_per_step: ClassVar[TokensPerStep] = "one"
+    """llama-server sends one SSE event per token and Ollama calls ``parser.Add`` once per event."""
 
     def __init__(self) -> None:
         self._replay: _JsonLinesProcess | None = None

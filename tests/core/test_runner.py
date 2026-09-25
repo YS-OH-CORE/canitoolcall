@@ -60,7 +60,7 @@ def test_run_reference_adapter(corpus: Path, reference_adapter_spec: str, refere
 
     assert results.engine.name == "reference"
     assert results.engine.version == "1.0"
-    assert results.engine.details == {"parser": "reference-hermes", "pinned_version": "1.0"}
+    assert results.engine.details == {"parser": "reference-hermes", "pinned_version": "1.0", "tokens_per_step": "many"}
     assert results.run.strategies == tuple(s.id for s in DEFAULT_STRATEGIES)
     assert results.run.normalization == "soft-v1"
     assert results.run.python == ".".join(map(str, sys.version_info[:3]))
@@ -374,3 +374,35 @@ def test_bad_config(corpus: Path, reference_adapter_spec: str, reference_env: di
         run(config(corpus, reference_adapter_spec, reference_env, jobs=0))
     with pytest.raises(ValueError, match="strategy"):
         run(config(corpus, reference_adapter_spec, reference_env, strategies=()))
+
+
+def test_failures_only_under_multi_token_chunks_do_not_count_for_one_token_engines(
+    corpus: Path, reference_env: dict[str, str]
+) -> None:
+    """Ollama-like engine (one event per token): a stream that breaks only when a delta holds the
+    whole output is reported, but the case does not fail."""
+    env = {**reference_env, "REFERENCE_ADAPTER_BUG": "drop-one"}
+    results = run(config(corpus, "reference_adapter:OneTokenReferenceAdapter", env, ids=(SAMPLE_ID,)))
+    schema_validate(results)
+    assert results.engine.details["tokens_per_step"] == "one"
+    assert set(results.run.synthetic_strategies) >= {"one", "special", "rand:1:8"}
+    assert "token" not in results.run.synthetic_strategies
+    (case,) = results.cases
+    assert case.status is Status.PASS
+    assert any(c.strategy == "one" and c.status is Status.FAIL for c in case.checks)  # still reported
+    # Loading the results back gives the same per-run synthetic set (the matrix uses it).
+    assert RunResults.from_dict(results.to_dict()).run.synthetic_strategies == results.run.synthetic_strategies
+
+
+def test_checks_crashing_on_a_reply_is_a_harness_error(
+    corpus: Path, reference_adapter_spec: str, reference_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import canitoolcall.checks
+
+    def boom(*args: object) -> list[object]:
+        raise TypeError("unexpected engine output")
+
+    monkeypatch.setattr(canitoolcall.checks, "run_checks", boom)
+    results = run(config(corpus, reference_adapter_spec, reference_env, ids=(SAMPLE_ID,)))
+    (case,) = results.cases
+    assert case.status is Status.ERROR and "unexpected engine output" in (case.harness_error or "")

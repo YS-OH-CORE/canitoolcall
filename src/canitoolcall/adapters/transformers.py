@@ -38,8 +38,6 @@ tool's JSON schema. ``serve`` does not pass them. The prompt is rendered from
 a fixed placeholder user message, because fixtures do not record the
 conversation. Only the part after the template's ``start_anchor`` reaches
 the parser.
-
-Reference implementation: ``.spikes/transformers/spike_transformers.py``.
 """
 
 from __future__ import annotations
@@ -48,11 +46,12 @@ import hashlib
 import importlib
 import json
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
-from canitoolcall.results import ParsedToolCall, ParseResult
+from canitoolcall.chunking import TokensPerStep
+from canitoolcall.results import ParsedToolCall, ParseResult, StreamAccumulator
 
 PINNED_REPOS: dict[str, str] = {
     "google/gemma-4-E2B-it": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
@@ -125,36 +124,6 @@ def exception_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-@dataclass
-class StreamAccumulator:
-    """OpenAI-client-style accumulation of streamed deltas (DESIGN.md rule 8).
-
-    ``transformers serve`` emits every tool call as one complete delta with a
-    fresh ``index``, so merging by index amounts to appending.
-    """
-
-    content: list[str] = field(default_factory=list)
-    reasoning: list[str] = field(default_factory=list)
-    tool_calls: list[ParsedToolCall] = field(default_factory=list)
-
-    def add_content(self, text: str) -> None:
-        self.content.append(text)
-
-    def add_reasoning(self, text: str) -> None:
-        self.reasoning.append(text)
-
-    def add_tool_call(self, name: str, arguments: str) -> None:
-        self.tool_calls.append(ParsedToolCall(name=name, arguments_raw=arguments))
-
-    def result(self, exception: str | None = None) -> ParseResult:
-        return ParseResult(
-            content="".join(self.content) if self.content else None,
-            reasoning_content="".join(self.reasoning) if self.reasoning else None,
-            tool_calls=tuple(self.tool_calls),
-            exception=exception,
-        )
-
-
 @dataclass(frozen=True)
 class _Loaded:
     """One tokenizer at one revision, with its verified Hub-shipped template."""
@@ -171,6 +140,8 @@ class TransformersAdapter(Adapter):
     name: ClassVar[str] = "transformers"
     pinned_version: ClassVar[str] = "5.17.0"
     supports_text_deltas: ClassVar[bool] = True
+    tokens_per_step: ClassVar[TokensPerStep] = "one"
+    """``transformers serve`` streams from ``generate`` one sampled token at a time."""
 
     def __init__(self) -> None:
         self._loaded: dict[tuple[str, str], _Loaded] = {}
@@ -359,7 +330,8 @@ class TransformersAdapter(Adapter):
         def emit(events: Iterable[dict[str, Any]]) -> None:
             for item in serve.response_events_to_chunks(list(events)):
                 if isinstance(item, serve.ToolCall):
-                    acc.add_tool_call(item.name, item.arguments)
+                    # serve emits each call as one complete delta with a fresh index
+                    acc.append_tool_call(item.name, item.arguments)
                 elif isinstance(item, serve.ReasoningText):
                     acc.add_reasoning(str(item))
                 elif isinstance(item, str):

@@ -4,7 +4,9 @@ Every check takes the fixture, its family metadata and the
 :class:`~canitoolcall.results.Observation` (one non-streaming parse plus one
 parse per chunking strategy) and returns :class:`CheckResult` rows. The runner
 calls :func:`run_checks` and derives the case status with :func:`case_status`
-(the worst status over rows of *realistic* strategies).
+(the worst status over rows of *realistic* strategies: ``char:*`` never counts,
+and multi-token strategies do not count for engines that stream one token per
+event; see :attr:`Observation.synthetic <canitoolcall.results.Observation.synthetic>`).
 
 Comparison policy (spec/README.md, "Normalization policy soft-v1"):
 
@@ -16,8 +18,9 @@ Comparison policy (spec/README.md, "Normalization policy soft-v1"):
   content/reasoning; whitespace-only -> ``None``.
 * strict-equal -> PASS; soft-only-equal -> SOFT_PASS; otherwise FAIL.
 
-Arguments that are not valid JSON (including ``""`` for a no-argument call and
-``NaN``/``Infinity``) never equal a valid parse. Two parses that raised compare
+Arguments that are not valid JSON (including ``""`` for a no-argument call,
+``NaN``/``Infinity``, objects with a duplicate key, and a non-string
+``arguments_raw``) never equal a valid parse. Two parses that raised compare
 equal when the exception *type* matches (messages may differ).
 
 To check a single parse (e.g. from a pytest plugin), call :func:`run_checks`
@@ -32,7 +35,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from functools import lru_cache
 from typing import Any
 
@@ -82,6 +85,11 @@ class _InvalidJSON:
     def __init__(self, raw: str) -> None:
         self.raw = raw
 
+    @classmethod
+    def of(cls, raw: object) -> _InvalidJSON:
+        """Marker for any raw value; non-strings are kept as their ``repr``."""
+        return cls(raw if isinstance(raw, str) else repr(raw))
+
     def __eq__(self, other: object) -> bool:
         return isinstance(other, _InvalidJSON) and other.raw == self.raw
 
@@ -96,12 +104,25 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
 
 
-def decode_arguments(raw: str) -> Any:
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate key {key!r}")
+        out[key] = value
+    return out
+
+
+def decode_arguments(raw: object) -> Any:
     """Strictly decode ``arguments_raw``; raises ``ValueError`` if it is not JSON.
 
-    Unlike :func:`json.loads`, ``NaN``/``Infinity`` are rejected (RFC 8259).
+    Unlike :func:`json.loads`, ``NaN``/``Infinity`` and objects with a
+    duplicate key are rejected (clients may keep either value), and a
+    non-string ``raw`` (e.g. ``None`` from an engine) is invalid too.
     """
-    return json.loads(raw, parse_constant=_reject_constant)
+    if not isinstance(raw, str):
+        raise ValueError(f"arguments are {type(raw).__name__}, not JSON text")
+    return json.loads(raw, parse_constant=_reject_constant, object_pairs_hook=_reject_duplicate_keys)
 
 
 def _canon_json(value: Any) -> Any:
@@ -129,12 +150,12 @@ def _canon_json(value: Any) -> Any:
     raise TypeError(f"not a JSON value: {type(value).__name__}")
 
 
-def canonical_arguments(raw: str) -> Any:
+def canonical_arguments(raw: object) -> Any:
     """Comparable form of ``arguments_raw``: canonical JSON, or an invalid marker."""
     try:
         return _canon_json(decode_arguments(raw))
     except ValueError:
-        return _InvalidJSON(raw)
+        return _InvalidJSON.of(raw)
 
 
 def _exception_type(exc: str | None) -> str | None:
@@ -209,23 +230,28 @@ def describe_difference(want: ParseResult, got: ParseResult, *, want_label: str 
 # --------------------------------------------------------------------------- helpers
 
 
-def is_synthetic(strategy: str) -> bool:
-    """True for strategy labels that never count toward a case's status (``char:*``).
+def is_synthetic(strategy: str, synthetic: Collection[str] = ()) -> bool:
+    """True for strategy labels that do not count toward a case's status.
 
-    ``nonstream``, ``*`` and unknown labels are treated as realistic, so a
-    row is never silently hidden.
+    ``char:*`` never counts; ``synthetic`` adds the engine-specific ones
+    (multi-token strategies on one-token-per-step engines, see
+    :func:`canitoolcall.chunking.synthetic_strategies`). ``nonstream``, ``*``
+    and unknown labels are treated as realistic, so a row is never silently
+    hidden.
     """
     if strategy in (NONSTREAM, ALL_STREAMS):
         return False
+    if strategy in synthetic:
+        return True
     try:
         return not ChunkStrategy.parse(strategy).realistic
     except ValueError:
         return False
 
 
-def case_status(rows: Sequence[CheckResult]) -> Status:
+def case_status(rows: Sequence[CheckResult], synthetic: Collection[str] = ()) -> Status:
     """Worst status over the rows of realistic strategies (see :func:`is_synthetic`)."""
-    return worst_status(r.status for r in rows if not is_synthetic(r.strategy))
+    return worst_status(r.status for r in rows if not is_synthetic(r.strategy, synthetic))
 
 
 def _parses(obs: Observation) -> Iterator[tuple[str, ParseResult]]:
@@ -304,7 +330,8 @@ def check_expected_error(fixture: Fixture, family: Family | None, obs: Observati
     (no calls, no exception), ``content_passthrough`` (no calls and content ==
     raw_output modulo surrounding whitespace; a whitespace-only difference is
     SOFT_PASS when it is the only accepted outcome that matched). Any returned
-    tool call fails.
+    tool call fails, also when the parse raised afterwards: a streaming client
+    had already received that (partial) call.
     """
     err = fixture.expected_error
     if err is None:
@@ -312,11 +339,15 @@ def check_expected_error(fixture: Fixture, family: Family | None, obs: Observati
     accept = set(err.accept)
     rows: list[CheckResult] = []
     for label, got in _parses(obs):
-        if got.tool_calls and got.exception is None:
+        if got.tool_calls:
             names = [tc.name for tc in got.tool_calls]
+            raised = f" (then raised {_short(got.exception)})" if got.exception is not None else ""
             rows.append(
                 _row(
-                    "expected_error", label, Status.FAIL, f"returned {len(names)} tool call(s) {names} for {err.reason}"
+                    "expected_error",
+                    label,
+                    Status.FAIL,
+                    f"returned {len(names)} tool call(s) {names}{raised} for {err.reason}",
                 )
             )
             continue
@@ -349,13 +380,13 @@ def check_split_invariance(fixture: Fixture, family: Family | None, obs: Observa
 
     One row (strategy ``"*"``) naming the strategies that disagree with the
     ``one`` (or first) stream in ``detail``. No row with fewer than two
-    realistic streams. Synthetic ``char:*`` streams are left out: they are
-    judged only by ``stream_equals_nonstream``.
+    realistic streams. Synthetic streams (``char:*`` and ``obs.synthetic``)
+    are left out: they are judged only by ``stream_equals_nonstream``.
     """
-    streams = {k: v for k, v in obs.streams.items() if not is_synthetic(k)}
+    streams = {k: v for k, v in obs.streams.items() if not is_synthetic(k, obs.synthetic)}
     if len(streams) < 2:
         return []
-    ref_id = "one" if "one" in streams else next(iter(streams))
+    ref_id = "one" if "one" in streams else "token" if "token" in streams else next(iter(streams))
     ref = streams[ref_id]
     statuses: list[Status] = []
     diffs: list[str] = []
@@ -408,7 +439,7 @@ def check_no_leakage(fixture: Fixture, family: Family | None, obs: Observation) 
             try:
                 strings = list(_iter_strings(decode_arguments(tc.arguments_raw)))
             except ValueError:
-                strings = [tc.arguments_raw]
+                strings = [tc.arguments_raw] if isinstance(tc.arguments_raw, str) else []
             for s in strings:
                 scan(f"tool_calls[{i}].arguments", s, allowed_args)
         unique = list(dict.fromkeys(leaks))
@@ -420,7 +451,7 @@ def _argument_problem(tc: ParsedToolCall) -> str | None:
     try:
         value = decode_arguments(tc.arguments_raw)
     except ValueError as e:
-        return f"{tc.name}: arguments are not valid JSON ({_short(tc.arguments_raw)}: {e})"
+        return f"{tc.name}: arguments are not valid JSON text ({_short(tc.arguments_raw)}: {e})"
     if not isinstance(value, dict):
         return f"{tc.name}: arguments decode to {type(value).__name__}, not an object ({_short(tc.arguments_raw)})"
     return None
@@ -546,7 +577,11 @@ ALL_CHECKS: Sequence[tuple[str, CheckFn]] = (
 
 
 def run_checks(fixture: Fixture, family: Family | None, obs: Observation) -> list[CheckResult]:
-    """Run every check in :data:`ALL_CHECKS` and concatenate their rows."""
+    """Run every check in :data:`ALL_CHECKS` and concatenate their rows.
+
+    Raises only on a harness problem (an invalid tool schema is reported as
+    an ERROR row); callers treat an exception as a harness error.
+    """
     rows: list[CheckResult] = []
     for _, fn in ALL_CHECKS:
         rows.extend(fn(fixture, family, obs))

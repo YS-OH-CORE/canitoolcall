@@ -161,3 +161,18 @@ def test_worker_usage_error() -> None:
     )
     assert proc.returncode == 2
     assert "usage" in proc.stderr
+
+
+def test_unavailable_engine_is_one_line_not_a_traceback() -> None:
+    from canitoolcall.adapters.base import AdapterUnavailable
+
+    class Missing(ReferenceAdapter):
+        def version(self) -> str:
+            raise AdapterUnavailable("No module named 'vllm'")
+
+    reply = handle(Missing(), {"op": "hello"})
+    assert reply == {"ok": False, "unavailable": True, "error": "No module named 'vllm'"}
+
+
+def test_hello_reports_tokens_per_step() -> None:
+    assert handle(ReferenceAdapter(), {"op": "hello"})["tokens_per_step"] == "many"

@@ -49,8 +49,6 @@ replayed as ``finished=True`` with the fixture's ids only, which is recorded
 as ``stop_token_in_final_delta: false``. Re-appending the id changed no result
 for the gpt-oss and qwen3-hermes corpora, apart from fixtures that end
 truncated or already contain the stop token.
-
-Reference implementation: ``.spikes/vllm/spike_vllm.py`` (local, gitignored).
 """
 
 from __future__ import annotations
@@ -67,8 +65,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
-from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
-from canitoolcall.results import ParsedToolCall, ParseResult
+from canitoolcall.adapters.base import (
+    Adapter,
+    AdapterUnavailable,
+    ReplayInput,
+    Support,
+    ToolSpec,
+    trusts_remote_code,
+)
+from canitoolcall.results import ParsedToolCall, ParseResult, StreamAccumulator
 
 # --------------------------------------------------------------------------- parser map
 
@@ -459,7 +464,9 @@ class VllmAdapter(Adapter):
         if mode == "auto":
             mode = next((ARCH_TOKENIZER_MODES[a] for a in architectures if a in ARCH_TOKENIZER_MODES), "auto")
         get_tokenizer = _imp("vllm.tokenizers").get_tokenizer
-        tok = get_tokenizer(repo, revision=revision, trust_remote_code=True, tokenizer_mode=mode)
+        tok = get_tokenizer(
+            repo, revision=revision, trust_remote_code=trusts_remote_code(repo, revision), tokenizer_mode=mode
+        )
         model = _Model(
             repo=repo,
             revision=revision,
@@ -665,7 +672,7 @@ class VllmAdapter(Adapter):
                 hf_config=SimpleNamespace(model_type=setup.model.model_type),
                 revision=setup.model.revision,
                 code_revision=None,
-                trust_remote_code=True,
+                trust_remote_code=trusts_remote_code(setup.model.repo, setup.model.revision),
             )
             raw_prompt = hf.safe_apply_chat_template(model_config, tok, conversation, **kwargs)
         if isinstance(raw_prompt, str):
@@ -693,37 +700,14 @@ class VllmAdapter(Adapter):
         return out
 
 
-class _StreamAccumulator:
-    """Accumulates ``DeltaMessage``s like openai-python's ``accumulate_delta``.
-
-    Content and reasoning are concatenated. Tool calls merge by ``index``, and
-    string fields (``name``, ``arguments``) are concatenated. So a name sent
-    once stays as is, and a repeated name shows up doubled, as a client would
-    see it.
-    """
-
-    def __init__(self) -> None:
-        self.content = ""
-        self.reasoning = ""
-        self.calls: dict[int, dict[str, str]] = {}
+class _StreamAccumulator(StreamAccumulator):
+    """The shared OpenAI-client accumulator (DESIGN.md rule 8), fed vLLM ``DeltaMessage``s."""
 
     def add(self, delta: Any) -> None:
         if delta is None:
             return
-        self.content += getattr(delta, "content", None) or ""
-        self.reasoning += getattr(delta, "reasoning", None) or ""
+        self.add_content(getattr(delta, "content", None))
+        self.add_reasoning(getattr(delta, "reasoning", None))
         for tc in getattr(delta, "tool_calls", None) or []:
-            slot = self.calls.setdefault(int(tc.index), {"name": "", "arguments": ""})
             fn = tc.function
-            if fn is None:
-                continue
-            slot["name"] += fn.name or ""
-            slot["arguments"] += fn.arguments or ""
-
-    def result(self, exception: str | None = None) -> ParseResult:
-        return ParseResult(
-            content=self.content or None,
-            reasoning_content=self.reasoning or None,
-            tool_calls=tuple(ParsedToolCall(c["name"], c["arguments"]) for _, c in sorted(self.calls.items())),
-            exception=exception,
-        )
+            self.add_tool_call(int(tc.index), fn.name if fn else None, fn.arguments if fn else None)

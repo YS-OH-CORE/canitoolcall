@@ -31,6 +31,11 @@
         "python": { "type": "string" },
         "fixtures_digest": { "type": "string", "description": "sha256 over the sorted fixture ids and their canonical JSON." },
         "strategies": { "type": "array", "items": { "type": "string" } },
+        "synthetic_strategies": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Strategies that ran but do not count toward case status for this engine: char:<seed> always, and multi-token strategies (one, special, rand:<seed>:<max> with max > 1) for engines whose server streams one token per event (engine.details.tokens_per_step = \"one\")."
+        },
         "normalization": { "type": "string", "description": "Name of the normalization policy used for soft comparisons (see spec/README.md)." }
       }
     },
@@ -77,7 +82,7 @@
             "required": ["name", "arguments_raw"],
             "properties": {
               "name": { "type": "string" },
-              "arguments_raw": { "type": "string", "description": "Arguments exactly as the engine returned them (JSON text in OpenAI format)." }
+              "arguments_raw": { "type": ["string", "null"], "description": "Arguments exactly as the engine returned them (JSON text in OpenAI format; null if the engine returned none, which the checks report as invalid)." }
             }
           }
         },
@@ -111,9 +116,9 @@
       "additionalProperties": false,
       "required": ["fixture_id", "family", "status", "checks"],
       "properties": {
-        "fixture_id": { "type": "string" },
-        "family": { "type": "string" },
-        "status": { "$ref": "#/$defs/status", "description": "Worst status over the checks of realistic strategies (fail > error > soft_pass > pass); synthetic char:<seed> rows are reported but never counted. unsupported if the adapter does not support the family/model." },
+        "fixture_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._-]*$" },
+        "family": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$" },
+        "status": { "$ref": "#/$defs/status", "description": "Worst status over the checks of realistic strategies (fail > error > soft_pass > pass); synthetic rows (run.synthetic_strategies) are reported but never counted. unsupported if the adapter does not support the family/model." },
         "reason": { "type": ["string", "null"], "description": "Why the adapter declined the family/model (status unsupported)." },
         "parser_config": { "type": "object", "description": "Exact parser configuration used (parser names, template source + sha256, reasoning/thinking flags, tokenizer mode)." },
         "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } },

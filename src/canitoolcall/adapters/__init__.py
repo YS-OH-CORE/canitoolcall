@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support
@@ -65,6 +66,37 @@ def load_adapter(engine: str) -> Adapter:
     return adapter_class(engine)()
 
 
+@dataclass(frozen=True)
+class EngineSetup:
+    """Where an engine's interpreter comes from, and whether it was set up at all."""
+
+    python: Path
+    source: str
+    """``env`` ($CANITOOLCALL_<ENGINE>_PYTHON), ``venv`` (.venvs/<engine>) or ``current`` (fallback)."""
+
+    @property
+    def configured(self) -> bool:
+        return self.source != "current"
+
+
+def engine_setup(engine: str, repo_root: Path | None = None) -> EngineSetup:
+    """Resolve the interpreter for ``engine`` like :func:`engine_python`, and say how."""
+    if repo_root is None:
+        from canitoolcall.fixtures import repo_root as _root
+
+        repo_root = _root()
+    if is_adapter_spec(engine):
+        return EngineSetup(Path(sys.executable), "current")
+    env = os.environ.get(PYTHON_ENV.format(ENGINE=engine.upper()))
+    if env:
+        return EngineSetup(Path(env), "env")
+    if repo_root is not None:
+        venv_py = repo_root / ".venvs" / engine / "bin" / "python"
+        if venv_py.exists():
+            return EngineSetup(venv_py, "venv")
+    return EngineSetup(Path(sys.executable), "current")
+
+
 def engine_python(engine: str, repo_root: Path | None = None) -> Path:
     """Interpreter that has ``engine`` installed.
 
@@ -86,12 +118,15 @@ def engine_python(engine: str, repo_root: Path | None = None) -> Path:
 
 __all__ = [
     "ENGINES",
+    "PYTHON_ENV",
     "Adapter",
     "AdapterUnavailable",
+    "EngineSetup",
     "ReplayInput",
     "Support",
     "adapter_class",
     "engine_python",
+    "engine_setup",
     "is_adapter_spec",
     "load_adapter",
 ]

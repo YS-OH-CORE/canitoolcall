@@ -34,6 +34,15 @@ T = TypeVar("T")
 
 StrategyKind = Literal["one", "special", "token", "rand", "char"]
 
+TokensPerStep = Literal["one", "many"]
+"""How many output tokens an engine's server can put in one streamed delta.
+
+``many``: deltas may carry several tokens (vLLM and SGLang output coalescing,
+``stream_interval``, speculative decoding). ``one``: the server emits one
+event per token (llama-server, Ollama on top of it, transformers ``serve``),
+so a multi-token delta never reaches the parser.
+"""
+
 
 @dataclass(frozen=True)
 class ChunkStrategy:
@@ -56,6 +65,22 @@ class ChunkStrategy:
     def realistic(self) -> bool:
         """False for ``char``: it can split special tokens, which engines never do."""
         return self.kind != "char"
+
+    @property
+    def multi_unit(self) -> bool:
+        """True if a delta can hold more than one unit (``one``, ``special``, ``rand`` with max > 1)."""
+        return self.kind in ("one", "special") or (self.kind == "rand" and self.max_group > 1)
+
+    def realistic_for(self, tokens_per_step: TokensPerStep) -> bool:
+        """Whether an engine that streams ``tokens_per_step`` can produce these deltas.
+
+        ``char`` never can. Multi-unit strategies only count for engines whose
+        deltas can carry several tokens; for one-token-per-step engines they
+        are still run and reported, but as synthetic (like ``char``).
+        """
+        if not self.realistic:
+            return False
+        return tokens_per_step == "many" or not self.multi_unit
 
     @classmethod
     def parse(cls, spec: str) -> ChunkStrategy:
@@ -154,6 +179,22 @@ def split(units: Sequence[T], strategy: ChunkStrategy, special: Collection[T] | 
 def split_text(text: str, strategy: ChunkStrategy) -> list[str]:
     """Character-level split (for the synthetic ``char`` strategy)."""
     return ["".join(g) for g in split(list(text), strategy)]
+
+
+def synthetic_strategies(strategies: Sequence[str], tokens_per_step: TokensPerStep) -> tuple[str, ...]:
+    """The strategy ids (in order) that do not count toward an engine's case status.
+
+    Unknown ids are treated as counting, so a result is never silently hidden.
+    """
+    out: list[str] = []
+    for sid in strategies:
+        try:
+            strat = ChunkStrategy.parse(sid)
+        except ValueError:
+            continue
+        if not strat.realistic_for(tokens_per_step):
+            out.append(sid)
+    return tuple(dict.fromkeys(out))
 
 
 def parse_strategies(specs: Sequence[str] | None) -> tuple[ChunkStrategy, ...]:

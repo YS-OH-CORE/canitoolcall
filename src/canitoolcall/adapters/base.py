@@ -25,6 +25,11 @@ breaking without it — see docs/DESIGN.md "Faithfulness requirements"):
 5. **Pin everything.** :meth:`Adapter.parser_config` returns every input to the
    parser configuration (parser names, template source + sha256,
    enable_thinking / reasoning_format, tokenizer mode) so results reproduce.
+
+Stop tokens (DESIGN.md adapter rule 5): fixtures end *before* the stop token.
+An adapter may re-append the stop token that ended generation, but never when
+:attr:`ReplayInput.truncated` is set: that output was cut by ``max_tokens``, so
+the engine must see ``finish_reason: "length"`` and no stop token.
 """
 
 from __future__ import annotations
@@ -34,11 +39,37 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from canitoolcall.chunking import TokensPerStep
 from canitoolcall.fixtures import Family, Fixture, TokenizerPin
 from canitoolcall.results import ParseResult
 
 ToolSpec = Mapping[str, Any]
 """An OpenAI-format tool: ``{"type": "function", "function": {...}}``."""
+
+
+REMOTE_CODE_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Kimi tokenizers are tiktoken-based and only load through the repo's own
+        # tokenization_kimi.py. Pinned (repo, revision) pairs; nothing else runs repo code.
+        ("moonshotai/Kimi-K2-Instruct", "fd1984e2b7a3350dbf7305fe73a4ede25c14de50"),  # adapter tests
+        ("moonshotai/Kimi-K2-Instruct-0905", "ac6c49f04883bd0a0598b790693a72061c676629"),
+        ("moonshotai/Kimi-K2.6", "7eb5002f6aadc958aed6a9177b7ed26bb94011bb"),
+        ("moonshotai/Kimi-K3", "f831ab66814297da540d832a5235f8e904f29d06"),
+    }
+)
+"""Hub ``(repo, revision)`` pairs whose tokenizer needs ``trust_remote_code``.
+
+Repo and revision come from fixture data (a ``tokenizer`` pin or family.json),
+which may be a third-party corpus. Loading with ``trust_remote_code=True``
+would run Python from that repo, so adapters and ``scripts/engines/gguf_vocab.sh``
+enable it only for these reviewed pins (SECURITY.md: code execution from a
+fixture is in scope).
+"""
+
+
+def trusts_remote_code(repo: str, revision: str | None) -> bool:
+    """True only for the reviewed pins in :data:`REMOTE_CODE_ALLOWLIST`."""
+    return revision is not None and (repo, revision) in REMOTE_CODE_ALLOWLIST
 
 
 @dataclass(frozen=True)
@@ -58,6 +89,9 @@ class ReplayInput:
     thinking: bool | None = None
     stop_tokens: tuple[str, ...] = ()
     tokenizer_mode: str = "hf"
+    truncated: bool = False
+    """Generation hit ``max_tokens`` (fixture tag ``truncated``): the finish
+    reason is ``length`` and no stop token may be appended (DESIGN.md adapter rule 5)."""
     revision: str | None = None
     """Pinned revision of the reference model (``family.reference_models[].revision``).
 
@@ -84,6 +118,7 @@ class ReplayInput:
             stop_tokens=ref.stop_tokens if ref else (),
             tokenizer_mode=(fixture.tokenizer.mode if fixture.tokenizer else (ref.tokenizer_mode if ref else "hf")),
             revision=ref.revision if ref else None,
+            truncated=fixture.truncated,
         )
 
 
@@ -113,6 +148,15 @@ class Adapter(abc.ABC):
 
     pinned_version: ClassVar[str]
     """The engine version (or commit) this adapter is written and tested against."""
+
+    tokens_per_step: ClassVar[TokensPerStep] = "many"
+    """How many tokens the engine's server can put in one streamed delta.
+
+    ``"one"`` for servers that emit one event per generated token (llama-server,
+    Ollama, transformers ``serve``): multi-token chunking strategies are then
+    still run but reported as synthetic and never counted toward the case
+    status. ``"many"`` for servers that coalesce tokens (vLLM, SGLang).
+    """
 
     @abc.abstractmethod
     def version(self) -> str:

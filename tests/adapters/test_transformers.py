@@ -108,8 +108,8 @@ def test_stream_accumulator_is_openai_client_style() -> None:
     acc.add_reasoning("think ")
     acc.add_reasoning("more")
     acc.add_content("hi")
-    acc.add_tool_call("f", '{"a": 1}')
-    acc.add_tool_call("g", "{}")
+    acc.append_tool_call("f", '{"a": 1}')
+    acc.append_tool_call("g", "{}")
     assert acc.result(exception="ValueError: x") == ParseResult(
         content="hi",
         reasoning_content="think more",

@@ -34,7 +34,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import IO, Any, Literal
 
 from canitoolcall import __version__
-from canitoolcall.chunking import DEFAULT_STRATEGIES, ChunkStrategy
+from canitoolcall.chunking import DEFAULT_STRATEGIES, ChunkStrategy, TokensPerStep, synthetic_strategies
 from canitoolcall.fixtures import Family, Fixture, ValidationIssue, fixtures_digest, load_fixtures, repo_root, validate
 from canitoolcall.results import (
     CaseResult,
@@ -91,12 +91,14 @@ class WorkerError(RuntimeError):
     """The worker process crashed, timed out, or answered ``ok: false``.
 
     ``fatal`` is True when the process is gone (crash, timeout, broken pipe)
-    and must be restarted before it can serve again.
+    and must be restarted before it can serve again. ``unavailable`` is True
+    when the worker reported that the engine is not installed.
     """
 
-    def __init__(self, message: str, *, fatal: bool = False) -> None:
+    def __init__(self, message: str, *, fatal: bool = False, unavailable: bool = False) -> None:
         super().__init__(message)
         self.fatal = fatal
+        self.unavailable = unavailable
 
 
 class FixtureValidationError(ValueError):
@@ -203,7 +205,9 @@ class WorkerClient:
         if self.alive:
             return
         if not self.python.exists():
-            raise WorkerError(f"engine interpreter not found: {self.python} (run scripts/engines/<engine>.sh)")
+            raise WorkerError(
+                f"engine interpreter not found: {self.python} (run scripts/engines/{self.engine}.sh)", unavailable=True
+            )
         self._lines = queue.Queue()
         with self._stderr_lock:
             self._stderr.clear()
@@ -350,7 +354,9 @@ class WorkerClient:
         self._send(msg)
         reply = self._receive(self.timeout_s if timeout is None else timeout)
         if not reply.get("ok"):
-            raise WorkerError(str(reply.get("error") or "worker answered ok: false"))
+            raise WorkerError(
+                str(reply.get("error") or "worker answered ok: false"), unavailable=bool(reply.get("unavailable"))
+            )
         return reply
 
     def hello(self) -> dict[str, Any]:
@@ -382,12 +388,13 @@ class WorkerClient:
 # --------------------------------------------------------------------------- evaluation
 
 
-def _observation(reply: Mapping[str, Any]) -> Observation:
+def _observation(reply: Mapping[str, Any], synthetic: Collection[str] = ()) -> Observation:
     try:
         streams = reply.get("streams") or {}
         return Observation(
             nonstream=ParseResult.from_dict(reply["nonstream"]),
             streams={str(k): ParseResult.from_dict(v) for k, v in streams.items()},
+            synthetic=frozenset(synthetic),
         )
     except (KeyError, TypeError, AttributeError) as e:
         raise WorkerError(f"malformed replay reply ({type(e).__name__}: {e})") from e
@@ -398,18 +405,25 @@ def evaluate(
     family: Family | None,
     reply: Mapping[str, Any],
     include_observed: IncludeObserved = "failures",
+    synthetic: Collection[str] = (),
 ) -> CaseResult:
     """Turn one worker ``replay`` reply into a CaseResult (runs the checks).
 
-    Raises :class:`WorkerError` if the reply is malformed.
+    ``synthetic`` lists the strategy ids that are reported but do not count
+    toward the status for this engine (see :func:`canitoolcall.chunking.synthetic_strategies`).
+    Raises :class:`WorkerError` if the reply is malformed or the checks fail
+    on it (a harness problem, never an engine outcome).
     """
     from canitoolcall.checks import case_status, run_checks
 
     if not reply.get("supported", False):
         return CaseResult(fixture.id, fixture.family, Status.UNSUPPORTED, reason=reply.get("reason"))
-    obs = _observation(reply)
-    rows = tuple(run_checks(fixture, family, obs))
-    status = case_status(rows)
+    obs = _observation(reply, synthetic)
+    try:
+        rows = tuple(run_checks(fixture, family, obs))
+    except Exception as e:  # never abort a whole run on one case
+        raise WorkerError(f"checks failed on this reply ({type(e).__name__}: {e})") from e
+    status = case_status(rows, obs.synthetic)
     keep = include_observed == "all" or (include_observed == "failures" and status is not Status.PASS)
     return CaseResult(
         fixture_id=fixture.id,
@@ -432,6 +446,7 @@ def replay_case(
     family: Family | None,
     strategies: Sequence[ChunkStrategy],
     include_observed: IncludeObserved = "failures",
+    synthetic: Collection[str] = (),
 ) -> CaseResult:
     """Replay one fixture and evaluate it; harness failures become ``error`` cases.
 
@@ -439,7 +454,7 @@ def replay_case(
     gets a fresh process. If the restart itself fails, the error propagates.
     """
     try:
-        return evaluate(fixture, family, client.replay(fixture, family, strategies), include_observed)
+        return evaluate(fixture, family, client.replay(fixture, family, strategies), include_observed, synthetic)
     except WorkerError as e:
         if e.fatal:
             client.restart()
@@ -483,10 +498,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def tokens_per_step(hello: Mapping[str, Any]) -> TokensPerStep:
+    """The engine's streaming granularity from a ``hello`` reply (``many`` if not stated)."""
+    return "one" if hello.get("tokens_per_step") == "one" else "many"
+
+
 def _engine_info(hello: Mapping[str, Any]) -> EngineInfo:
     details = dict(hello.get("details") or {})
     if hello.get("pinned_version") is not None:
         details.setdefault("pinned_version", hello["pinned_version"])
+    details.setdefault("tokens_per_step", tokens_per_step(hello))
     return EngineInfo(
         name=str(hello["engine"]),
         version=str(hello["version"]),
@@ -535,9 +556,10 @@ def run(config: RunConfig) -> RunResults:
         if len(ident) != 1:
             raise WorkerError(f"workers disagree on the engine: {sorted(map(str, ident))}")
         strategies = list(dict.fromkeys(config.strategies))
+        synthetic = synthetic_strategies([s.id for s in strategies], tokens_per_step(hellos[0]))
         if n_workers == 1:
             cases = [
-                replay_case(clients[0], fx, fam, strategies, config.include_observed)
+                replay_case(clients[0], fx, fam, strategies, config.include_observed, synthetic)
                 for fx, fam in zip(fixtures, families, strict=True)
             ]
         else:
@@ -548,7 +570,7 @@ def run(config: RunConfig) -> RunResults:
             def task(fx: Fixture, fam: Family | None) -> CaseResult:
                 client = pool.get()
                 try:
-                    return replay_case(client, fx, fam, strategies, config.include_observed)
+                    return replay_case(client, fx, fam, strategies, config.include_observed, synthetic)
                 finally:
                     pool.put(client)
 
@@ -570,6 +592,7 @@ def run(config: RunConfig) -> RunResults:
             fixtures_digest=fixtures_digest(fixtures),
             strategies=tuple(dict.fromkeys(s.id for s in config.strategies)),
             normalization=NORMALIZATION,
+            synthetic_strategies=synthetic,
         ),
         cases=tuple(cases),
     )
@@ -593,5 +616,6 @@ __all__ = [
     "run",
     "run_and_write",
     "select_fixtures",
+    "tokens_per_step",
     "worker_env",
 ]

@@ -10,6 +10,7 @@ from canitoolcall.chunking import (
     special_group_sizes,
     split,
     split_text,
+    synthetic_strategies,
 )
 
 SPECIAL = ChunkStrategy("special")
@@ -110,3 +111,26 @@ def test_default_set_is_pinned() -> None:
 def test_parse_strategies_default() -> None:
     assert parse_strategies(None) == DEFAULT_STRATEGIES
     assert [s.id for s in parse_strategies(["one", "rand:9:2"])] == ["one", "rand:9:2"]
+
+
+@pytest.mark.parametrize(
+    ("sid", "many", "one"),
+    [
+        ("one", True, False),
+        ("special", True, False),
+        ("token", True, True),
+        ("rand:1:8", True, False),
+        ("rand:1:1", True, True),
+        ("char:0", False, False),
+    ],
+)
+def test_realistic_for_tokens_per_step(sid: str, many: bool, one: bool) -> None:
+    strat = ChunkStrategy.parse(sid)
+    assert strat.realistic_for("many") is many
+    assert strat.realistic_for("one") is one
+
+
+def test_synthetic_strategies() -> None:
+    ids = ["one", "special", "token", "rand:1:8", "char:0", "bogus"]
+    assert synthetic_strategies(ids, "many") == ("char:0",)
+    assert synthetic_strategies(ids, "one") == ("one", "special", "rand:1:8", "char:0")

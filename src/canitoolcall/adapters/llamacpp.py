@@ -25,7 +25,8 @@ JSON lines over stdin/stdout, see ``harnesses/llamacpp/replay.cpp``):
   held back (``validate_utf8``), partial stop strings are held back, a full stop
   string cuts the text, an end-of-generation token stops generation. The stop
   token that ended the real generation (``ReplayInput.stop_tokens``) is fed as
-  the final server step.
+  the final server step, except for ``truncated`` fixtures (cut by
+  ``max_tokens``, so no stop token was ever generated).
 * Non-streaming: ``common_chat_parse(generated_text, is_partial=false)``.
 * Streaming, exactly like ``task_result_state::update_chat_msg``: after each
   chunk, re-parse the accumulated sent text with ``is_partial=true`` and keep
@@ -58,7 +59,8 @@ from pathlib import Path
 from typing import IO, Any, ClassVar
 
 from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
-from canitoolcall.results import ParsedToolCall, ParseResult
+from canitoolcall.chunking import TokensPerStep
+from canitoolcall.results import ParsedToolCall, ParseResult, StreamAccumulator
 
 HARNESS_PROTOCOL = 1
 HARNESS_ENV = "CANITOOLCALL_LLAMACPP_HARNESS"
@@ -129,25 +131,20 @@ def llamacpp_template_file(src_dir: Path, repo: str) -> Path | None:
 def accumulate(deltas: Sequence[Mapping[str, Any]], exception: str | None = None) -> ParseResult:
     """Merge ``common_chat_msg_diff`` deltas OpenAI-client style (DESIGN.md rule 8).
 
-    Content and reasoning deltas are concatenated; tool-call deltas are merged by
-    ``index``: the name is set once (the first non-empty one), argument fragments
-    are concatenated. Fields that never received a delta stay ``None``.
+    Uses the shared :class:`~canitoolcall.results.StreamAccumulator`: content and
+    reasoning deltas are concatenated; tool-call deltas are merged by ``index``
+    with name and argument fragments concatenated, as openai-python does. The
+    server sends the name again when a call's id changes (``compute_diffs``),
+    and a client then sees it repeated. Fields that never received a delta stay
+    ``None``.
     """
-    content: str | None = None
-    reasoning: str | None = None
-    calls: dict[int, list[str]] = {}
+    acc = StreamAccumulator()
     for d in deltas:
-        if d.get("reasoning_content"):
-            reasoning = (reasoning or "") + d["reasoning_content"]
-        if d.get("content"):
-            content = (content or "") + d["content"]
+        acc.add_reasoning(d.get("reasoning_content"))
+        acc.add_content(d.get("content"))
         if "index" in d:
-            name_args = calls.setdefault(int(d["index"]), ["", ""])
-            if not name_args[0] and d.get("name"):
-                name_args[0] = d["name"]
-            name_args[1] += d.get("arguments", "")
-    tool_calls = tuple(ParsedToolCall(name, args) for _, (name, args) in sorted(calls.items()))
-    return ParseResult(content=content, reasoning_content=reasoning, tool_calls=tool_calls, exception=exception)
+            acc.add_tool_call(int(d["index"]), d.get("name"), d.get("arguments"))
+    return acc.result(exception)
 
 
 def message_result(msg: Mapping[str, Any]) -> ParseResult:
@@ -265,6 +262,8 @@ class LlamaCppAdapter(Adapter):
     name: ClassVar[str] = "llamacpp"
     pinned_version: ClassVar[str] = "a25c9865fe03c954c93fd755b5d79ae86ba99750"
     supports_text_deltas: ClassVar[bool] = True
+    tokens_per_step: ClassVar[TokensPerStep] = "one"
+    """llama-server sends one partial response per sampled token (``process_token``)."""
 
     def __init__(
         self,
@@ -464,7 +463,8 @@ class LlamaCppAdapter(Adapter):
             "reasoning_format": REASONING_FORMAT,
             "chat_template_kwargs": self._kwargs(raw),
             "ids": list(units if units is not None else self.units(raw)),
-            "end_tokens": list(raw.stop_tokens),
+            # A truncated generation ended at max_tokens, with no stop token.
+            "end_tokens": [] if raw.truncated else list(raw.stop_tokens),
             "nonstream": nonstream,
             "streams": [dict(s) if isinstance(s, Mapping) else list(s) for s in streams],
         }

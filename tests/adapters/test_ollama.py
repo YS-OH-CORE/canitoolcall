@@ -174,7 +174,8 @@ def test_accumulation() -> None:
     ]
     stream = accumulate_stream(events)
     assert stream.reasoning_content == "t1t2" and stream.content == "c"
-    assert stream.tool_calls == (ParsedToolCall("f", '{"a":1}'), ParsedToolCall("g", "{}"))
+    # A repeated name at the same index is concatenated, as openai-python's accumulate_delta does.
+    assert stream.tool_calls == (ParsedToolCall("ff", '{"a":1}'), ParsedToolCall("g", "{}"))
     nonstream = accumulate_nonstream(events, has_tools=True)
     assert nonstream.tool_calls == (ParsedToolCall("f", '{"a":1}'), ParsedToolCall("f", ""), ParsedToolCall("g", "{}"))
     # writeChatResponse keeps tool calls only when the request had tools.

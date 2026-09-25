@@ -173,13 +173,16 @@ def test_stream_accumulator_decodes_sse_openai_client_style() -> None:
     acc.add_sse(_sse({"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "f", "arguments": ""}}]}))
     acc.add_sse(_sse({"tool_calls": [{"index": 0, "id": None, "function": {"name": None, "arguments": '{"a": '}}]}))
     acc.add_sse(_sse({"tool_calls": [{"index": 1, "id": "call_2", "function": {"name": "g", "arguments": "{}"}}]}))
-    acc.add_sse(_sse({"tool_calls": [{"index": 0, "function": {"name": "f", "arguments": "1}"}}]}))
+    acc.add_sse(_sse({"tool_calls": [{"index": 0, "function": {"name": None, "arguments": "1}"}}]}))
     acc.add_sse("data: [DONE]\n\n")
     assert acc.result() == ParseResult(
         content="Hi",
         reasoning_content="think more",
         tool_calls=(ParsedToolCall("f", '{"a": 1}'), ParsedToolCall("g", "{}")),
     )
+    # A name re-sent in a later delta is concatenated, as openai-python's accumulate_delta does.
+    acc.add_sse(_sse({"tool_calls": [{"index": 1, "function": {"name": "g"}}]}))
+    assert acc.result().tool_calls[1].name == "gg"
     assert StreamAccumulator().result(exception="E: x") == ParseResult(exception="E: x")
 
 
@@ -298,6 +301,7 @@ def test_engine_core_sample(worker: Worker) -> None:
         "id": 151645,
         "rule": "first stop token of the reference model",
         "appended": True,
+        "finish_reason": "stop",
         "kept_by_engine": False,
     }
     expected = _expected_calls(rec)
@@ -507,6 +511,27 @@ def test_engine_gpt_oss_without_call_token_finds_nothing(worker: Worker) -> None
     r = worker.replay(fx, fam)
     assert r["parser_config"]["stop"]["kept_by_engine"] is False
     assert r["nonstream"]["tool_calls"] == []
+
+
+def _corpus_fixture(fixture_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    fam_dir = ROOT / "fixtures" / fixture_id.split("/")[0]
+    for path in sorted(fam_dir.glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip() and json.loads(line)["id"] == fixture_id:
+                return json.loads(line), json.loads((fam_dir / "family.json").read_text(encoding="utf-8"))
+    raise LookupError(fixture_id)
+
+
+@pytest.mark.engine("sglang")
+def test_engine_truncated_fixture_gets_no_stop_token(worker: Worker) -> None:
+    """Output cut by max_tokens never gets a stop token: SGLang sees FINISH_LENGTH instead."""
+    fx, fam = _corpus_fixture("gpt-oss/harmony-truncated-in-arguments")
+    assert "truncated" in fx["tags"]
+    r = worker.replay(fx, fam)
+    stop = r["parser_config"]["stop"]
+    assert stop["appended"] is False and stop["id"] is None and stop["finish_reason"] == "length"
+    for parse in (r["nonstream"], *r["streams"].values()):
+        assert "<|call|>" not in (parse["content"] or "")
 
 
 @pytest.mark.engine("sglang")

@@ -9,7 +9,8 @@ logging. Protocol (version 1):
 
 ``{"op": "hello"}``
     -> ``{"ok": true, "protocol": 1, "engine": str, "version": str,
-    "pinned_version": str, "commit": str|null, "python": str, "details": {...}}``
+    "pinned_version": str, "tokens_per_step": "one"|"many", "commit": str|null,
+    "python": str, "details": {...}}``
 
 ``{"op": "replay", "fixture": <fixture record>, "family": <family.json>|null,
 "strategies": ["one", "special", "token", "rand:1:8", ...]}``
@@ -22,7 +23,8 @@ logging. Protocol (version 1):
     -> ``{"ok": true}`` then exit 0.
 
 Any harness failure answers ``{"ok": false, "error": "<traceback>"}`` and the
-worker keeps serving. Standard library only.
+worker keeps serving. An engine that is not installed answers
+``{"ok": false, "unavailable": true, "error": "<one line>"}``. Standard library only.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import IO, Any
 
 from canitoolcall.adapters import load_adapter
-from canitoolcall.adapters.base import Adapter, ReplayInput
+from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput
 from canitoolcall.chunking import ChunkStrategy, split, split_text
 from canitoolcall.fixtures import Family, Fixture
 
@@ -50,6 +52,7 @@ def hello(adapter: Adapter) -> dict[str, Any]:
         "engine": adapter.name,
         "version": adapter.version(),
         "pinned_version": adapter.pinned_version,
+        "tokens_per_step": adapter.tokens_per_step,
         "commit": adapter.commit(),
         "python": platform.python_version(),
         "details": adapter.engine_details(),
@@ -133,6 +136,8 @@ def handle(adapter: Adapter, msg: Mapping[str, Any]) -> dict[str, Any]:
         if op == "shutdown":
             return {"ok": True}
         return {"ok": False, "error": f"unknown op {op!r}"}
+    except AdapterUnavailable as e:
+        return {"ok": False, "unavailable": True, "error": str(e)}
     except Exception:
         return {"ok": False, "error": traceback.format_exc()}
 

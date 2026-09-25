@@ -125,3 +125,42 @@ def test_load_rejects_unknown_major(tmp_path: Path) -> None:
     path.write_text(json.dumps(d), encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version"):
         RunResults.load(path)
+
+
+def test_results_file_is_readable_by_others(tmp_path: Path) -> None:
+    import os
+
+    mask = os.umask(0o022)
+    try:
+        path = _run().write(tmp_path / "out.json")
+    finally:
+        os.umask(mask)
+    assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_stream_accumulator_concatenates_like_openai_python() -> None:
+    from canitoolcall.results import StreamAccumulator
+
+    acc = StreamAccumulator()
+    acc.add_openai_delta({"reasoning_content": "a", "content": None})
+    acc.add_openai_delta({"reasoning": "b", "content": "c"})
+    acc.add_openai_delta({"tool_calls": [{"index": 0, "function": {"name": "get", "arguments": '{"x"'}}]})
+    acc.add_openai_delta({"tool_calls": [{"index": 0, "function": {"name": "_weather", "arguments": ": 1}"}}]})
+    acc.add_tool_call(0, "_weather")  # a duplicated name delta shows up doubled, as clients see it
+    acc.append_tool_call("g", "{}")
+    assert acc.result() == ParseResult(
+        content="c",
+        reasoning_content="ab",
+        tool_calls=(ParsedToolCall("get_weather_weather", '{"x": 1}'), ParsedToolCall("g", "{}")),
+    )
+
+
+def test_parse_result_from_dict_validates_types() -> None:
+    import pytest
+
+    with pytest.raises(TypeError, match="content"):
+        ParseResult.from_dict({"content": 5})
+    with pytest.raises(TypeError, match="name"):
+        ParseResult.from_dict({"tool_calls": [{"name": None, "arguments_raw": "{}"}]})
+    kept = ParseResult.from_dict({"tool_calls": [{"name": "f", "arguments_raw": None}]})
+    assert kept.tool_calls[0].arguments_raw is None  # an engine outcome, judged by the checks

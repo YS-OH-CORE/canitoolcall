@@ -550,3 +550,43 @@ def test_checks_never_raise_on_garbage(fx: Fixture, fam: Family) -> None:
     )
     rows = run_checks(fx, fam, obs(garbage, one=ParseResult(exception="Boom"), token=garbage))
     assert case_status(rows) is Status.FAIL
+
+
+def test_checks_never_raise_on_non_string_arguments(fx: Fixture, fam: Family, good: ParseResult) -> None:
+    # SGLang's FunctionResponse.arguments is Optional; a worker reply can carry null.
+    for raw in (None, 5, ["a"]):
+        bad = ParseResult(tool_calls=(ParsedToolCall("get_weather", raw),))  # type: ignore[arg-type]
+        rows = run_checks(fx, fam, obs(bad, one=bad))
+        assert case_status(rows) is Status.FAIL
+        assert any(r.check == "arguments_json" and "not valid JSON" in (r.detail or "") for r in rows)
+    assert canonical_arguments(None) != canonical_arguments("null")
+
+
+def test_duplicate_keys_are_invalid_json() -> None:
+    assert canonical_arguments('{"a":1,"a":2}') != canonical_arguments('{"a":2}')
+    with pytest.raises(ValueError, match="duplicate key"):
+        decode_arguments('{"a": 1, "b": {"c": 1, "c": 1}}')
+    assert canonical_arguments('{"a": {"b": 1}}') == canonical_arguments('{"a":{"b":1}}')
+
+
+def test_expected_error_fails_a_call_returned_before_an_exception(trunc: Fixture) -> None:
+    partial = ParseResult(tool_calls=(ParsedToolCall("get_weather", '{"city": "Par'),), exception="ValueError: cut")
+    rows = check_expected_error(with_accept(trunc, "exception"), None, obs(partial))
+    assert by_strategy(rows) == {NONSTREAM: Status.FAIL}
+    assert "then raised" in (rows[0].detail or "")
+
+
+def test_engine_specific_synthetic_strategies_do_not_count(fx: Fixture, good: ParseResult) -> None:
+    """A one-token-per-step engine (Ollama) that fails only when a delta holds the whole output."""
+    bad = replace(good, tool_calls=())
+    observation = Observation(
+        nonstream=good,
+        streams={"one": bad, "token": good, "rand:1:8": bad},
+        synthetic=frozenset({"one", "rand:1:8"}),
+    )
+    rows = run_checks(fx, None, observation)
+    assert case_status(rows) is Status.FAIL  # without the engine's synthetic set
+    assert case_status(rows, observation.synthetic) is Status.PASS
+    # split_invariance compares realistic streams only: here just "token", so no row.
+    assert not [r for r in rows if r.check == "split_invariance"]
+    assert is_synthetic("one", {"one"}) and not is_synthetic("token", {"one"})

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import stat
@@ -93,7 +94,7 @@ def test_accumulate_openai_client_style() -> None:
         {"reasoning_content": "king"},
         {"content": "Hi"},
         {"index": 0, "name": "get_", "id": "a", "arguments": ""},
-        {"index": 0, "name": "get_weather", "id": "a", "arguments": '{"city": '},  # name is set once
+        {"index": 0, "name": "weather", "id": "a", "arguments": '{"city": '},  # name fragments concatenate
         {"index": 0, "name": "", "id": "", "arguments": '"Paris"}'},
         {"index": 1, "name": "search", "id": "b", "arguments": "{}"},
     ]
@@ -101,7 +102,7 @@ def test_accumulate_openai_client_style() -> None:
     assert r == ParseResult(
         content="Hi",
         reasoning_content="thinking",
-        tool_calls=(ParsedToolCall("get_", '{"city": "Paris"}'), ParsedToolCall("search", "{}")),
+        tool_calls=(ParsedToolCall("get_weather", '{"city": "Paris"}'), ParsedToolCall("search", "{}")),
     )
     assert accumulate([]) == ParseResult()
     assert accumulate([{"content": "x"}], "LlamaCppError: boom").exception == "LlamaCppError: boom"
@@ -265,6 +266,13 @@ def test_parse_mapping_and_template_choice(tmp_path: Path) -> None:
     assert cfg["detokenized_matches_raw_output"] is True
     assert cfg["tokenizer"] == "org/m@r1"
     assert cfg["template_alternatives"]["gguf"]["available"] is False
+
+    # A generation cut by max_tokens never ended with a stop token: none is fed.
+    truncated = dataclasses.replace(raw, fixture_id="fam/cut", truncated=True)
+    a.parse(truncated, tools)
+    a.parse_stream(truncated, [[1, 2, 3]], tools)
+    cut_reqs = _requests(log)[len(reqs) :]
+    assert cut_reqs and all(r["end_tokens"] == [] for r in cut_reqs)
     a.close()
 
 
