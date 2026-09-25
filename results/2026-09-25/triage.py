@@ -21,13 +21,18 @@ for f in glob.glob(str(ROOT / "fixtures" / "*" / "*.jsonl")):
 
 runs = {}
 for f in sorted(glob.glob(f"{SNAP}/*.json.gz")):
-    d = json.loads(gzip.open(f, "rt").read())
+    with gzip.open(f, "rt") as fh:
+        d = json.loads(fh.read())
     runs[d["engine"]["name"]] = d
+    # Strategies this engine never produces (run.synthetic_strategies) never count.
+    syn = set(d["run"].get("synthetic_strategies") or ())
+    for c in d["cases"]:
+        c["_synthetic"] = syn
 
 def fails(c):
     out = collections.defaultdict(set)
     for r in c["checks"]:
-        if r["status"] == "fail" and not r["strategy"].startswith("char"):
+        if r["status"] == "fail" and not r["strategy"].startswith("char") and r["strategy"] not in c["_synthetic"]:
             out[r["check"]].add(r["strategy"])
     return out
 
@@ -62,19 +67,21 @@ CONTESTED = {"deepseek/sglang-v4-self-closing-invoke"}
 NO_NEWLINE = {"qwen3-hermes/vllm-no-newlines-no-spaces", "qwen3-hermes/vllm-text-then-call-no-separator", "qwen3-hermes/vllm-two-calls-no-separator", "qwen3-hermes/vllm-content-and-call-single-chunk", "qwen3-hermes/sglang-text-before-call-with-space"}
 HISTORY_TEXT_AFTER = {"gemma4/text-after-call", "gemma4/text-after-call-thinking", "glm/glm45-ollama-content-after-call"}
 
-# (id, engine, classification, summary, upstream, direct_repro, selector)
+# (id, engine, classification, summary, upstream, direct_repro, notes, selector)
 F = []
-def finding(fid, engine, cls, summary, sel, upstream=None, direct=None):
-    F.append(dict(id=fid, engine=engine, classification=cls, summary=summary, upstream=upstream, direct_repro=direct, sel=sel))
+def finding(fid, engine, cls, summary, sel, upstream=None, direct=None, notes=None):
+    F.append(dict(id=fid, engine=engine, classification=cls, summary=summary, upstream=upstream, direct_repro=direct,
+                  notes=notes, sel=sel))
 
 # ---- not bugs / policy (checked first) ----
 for eng in runs:
     finding(f"{eng}-truncated-call-returned", eng, "truncation_policy",
             "Output cut by max_tokens inside a call comes back as a (partial) tool call. Fails by the spec's truncation policy (spec/README.md), not a mis-parse of complete output.",
             lambda c, fid: ("truncated" in tags(fid) or "truncated" in fid) and (not is_err(fid) or returned_calls(c)) and ("second-parallel" in fid or returned_calls(c)))
-    finding(f"{eng}-call-id-not-generated", eng, "not_generated_by_model",
-            "Mistral v11 [CALL_ID] outputs come from llama.cpp's tests; mistral-common's generation grammar has no [CALL_ID], so the model does not emit it. Not counted as a bug.",
-            lambda c, fid: fid in NOT_GENERATED_CALL_ID)
+    if eng != "llamacpp":  # llama.cpp rejects both shapes the same way: see llamacpp-mistral-bos-rejects-calls
+        finding(f"{eng}-call-id-format-unverified", eng, "format_unverified",
+                "Mistral v11 [CALL_ID] outputs come from llama.cpp's tests. mistral-common's generation grammar has no [CALL_ID], but it only constrains guided decoding, and llama.cpp's tests assume the model emits it. Which form Mistral-Small-3.2 generates freely is unverified until a recorded generation settles it; not counted as a bug either way.",
+                lambda c, fid: fid in NOT_GENERATED_CALL_ID)
     finding(f"{eng}-contested-format", eng, "contested_fixture",
             "DSML self-closing invoke: SGLang says the model emits it, DeepSeek's encoder never does and its parser rejects it.",
             lambda c, fid: fid in CONTESTED)
@@ -135,7 +142,8 @@ finding("vllm-hermes-stream-incomplete-json", "vllm", "engine_bug",
 finding("vllm-missing-close-drops-argument", "vllm", "engine_bug_known_upstream",
         "A missing closing tag before the call end drops the last argument (glm47 without the last </arg_value>; qwen3_coder without </parameter> gives {}).",
         lambda c, fid: fid in {"glm/glm47-missing-last-close-arg-value", "qwen3-xml/bug-missing-close-parameter-before-function"},
-        upstream="https://github.com/vllm-project/vllm/issues/57699")
+        upstream="https://github.com/vllm-project/vllm/issues/57699",
+        notes="GLM part: vllm#57826's thread (2026-09-23) says it was already fixed on main by #45701 (merged 2026-06-16, before v0.30.0), but vLLM 0.30.0 still drops the value: vllm/parser/glm47_moe.py L56-66 gates _PARTIAL_ARG_RE behind 'if partial:', and Glm47MoeModelToolParser.extract_tool_calls returns {\"city\": \"Berlin\"} without unit. Settle the conflicting comment before reporting. The glm fixture's raw_output is derived (tag x-derived), not quoted from the issue.")
 finding("vllm-qwen3-coder-text-after-call", "vllm", "engine_bug_known_upstream",
         "qwen3_coder drops text after a call.", lambda c, fid: fid == "qwen3-xml/bug-coder-text-after-call",
         upstream="https://github.com/sgl-project/sglang/issues/40739")
@@ -153,8 +161,12 @@ finding("sglang-one-delta-args-lost", "sglang", "engine_bug",
 finding("sglang-stream-split-loss", "sglang", "engine_bug",
         "Streaming loses arguments, parallel calls or content for multi-token deltas beyond the single-delta case (random 1-8 token groups also fail); non-streaming is correct (qwen25, deepseekv3/v31, llama3, mistral, gemma4, glm45).",
         lambda c, fid: nonstream_ok(c) and not marker(fid) and c["family"] != "gpt-oss")
+finding("sglang-gpt-oss-role-header-recipient", "sglang", "engine_bug",
+        "ONE gap, many fixtures: the gpt-oss detector does not recognise a recipient in the role header ('<|start|>assistant to=functions.X<|channel|>commentary'), which the Harmony spec allows ('The recipient might be defined in the role or channel section of the header', docs/format.md) and which openai-harmony and the HF template render for history. Generations put the recipient after the channel, which SGLang parses. Every fixture here is tagged x-recipient-in-role; count it as one finding.",
+        lambda c, fid: c["family"] == "gpt-oss" and "x-recipient-in-role" in tags(fid),
+        notes="Most of these fixtures are history renders (openai-harmony 0.0.8, the HF template). Severity depends on whether any real client or model sends this form to the parser.")
 finding("sglang-gpt-oss-header-forms", "sglang", "engine_bug",
-        "gpt-oss detector only recognises '<|start|>assistant<|channel|>commentary to=...<|constrain|>json'. Calls with the recipient in the role header (allowed by the Harmony spec), a call as the first message, or no '<|constrain|>json' come back as content with the markup leaked.",
+        "gpt-oss detector only recognises '<|start|>assistant<|channel|>commentary to=...<|constrain|>json'. A call as the first message (no '<|start|>assistant' prefix), or no '<|constrain|>json', comes back as content with the markup leaked.",
         lambda c, fid: c["family"] == "gpt-oss")
 finding("sglang-glm45-think-leak", "sglang", "engine_bug",
         "glm45 non-streaming reasoning leaks '\\n<think>' into reasoning_content.",
@@ -174,9 +186,10 @@ finding("sglang-other", "sglang", "untriaged_discrepancy",
 
 finding("llamacpp-deepseek-v3-preserved-tokens", "llamacpp", "engine_bug",
         "With the official HF DeepSeek-V3/V3.1 chat template (as embedded in a converted GGUF), the autoparser derives malformed preserved_tokens (multi-token strings such as 'function<｜tool▁sep｜>'), so <｜tool▁sep｜> is never rendered and every call fails with 'does not match the expected peg-native format'.",
-        lambda c, fid: c["family"] == "deepseek" and re.search(r"DeepSeek-V3(\.1)?(-0324)?$", model(fid)) is not None)
+        lambda c, fid: c["family"] == "deepseek" and re.search(r"DeepSeek-V3(\.1)?(-0324)?$", model(fid)) is not None,
+        notes="Only with the HF template. llama.cpp's own tests (test-chat.cpp L3909-3981) use its rewritten copy models/templates/deepseek-ai-DeepSeek-V3.1.jinja (sha256 d9f5f351..., 3211 bytes vs the HF template's 45690185..., 2779 bytes), with which the parser works (parser_config.template_alternatives records that outcome per fixture). Popular GGUFs (Hub API GET, 2026-09-25): bartowski/deepseek-ai_DeepSeek-V3.1-GGUF@a7ccff77 embeds the HF template (sha256 45690185...); unsloth/DeepSeek-V3.1-GGUF@feb73eff embeds its own modified template (eccaf95e..., 3096 bytes), not tested here. Re-check both before reporting upstream.")
 finding("llamacpp-mistral-bos-rejects-calls", "llamacpp", "engine_bug_candidate",
-        "Mistral-Small-3.2 (v11) and Mistral-7B-v0.3 (v3) tool calls are rejected ('does not match the expected peg-native format') when the vocab's BOS is passed to common_chat_templates_init, as llama-server does; test-chat.cpp (model=nullptr) accepts them. Verified by A/B in the harness, not against a live llama-server.",
+        "CANDIDATE, unconfirmed: Mistral-Small-3.2 (v11) and Mistral-7B-v0.3 (v3) tool calls are rejected ('does not match the expected peg-native format') when the vocab's BOS is passed to common_chat_templates_init, as llama-server does; test-chat.cpp (model=nullptr) accepts them. Seen only by A/B in the harness, never against a live llama-server. For v11 it covers both shapes: the id-less mistral-common renders and llama.cpp's own [CALL_ID] test strings fail the same way, so it does not depend on which form the model generates (that is unverified, see *-call-id-format-unverified).",
         lambda c, fid: c["family"] == "mistral" and re.search(r"Mistral-Small-3\.2|Mistral-7B", model(fid)) is not None)
 finding("llamacpp-kimi-k3-eog-leak", "llamacpp", "engine_bug",
         "Kimi K3: <|end_of_msg|> is both a preserved token and the end-of-generation token, so llama-server renders it and it leaks into content/reasoning.",
@@ -191,7 +204,7 @@ finding("llamacpp-marker-text-in-arguments", "llamacpp", "engine_bug",
         "Format-marker text inside argument strings or reasoning breaks the parse.",
         lambda c, fid: marker(fid))
 finding("llamacpp-other", "llamacpp", "untriaged_discrepancy",
-        "Other llama.cpp discrepancies (text around Gemma calls, GLM-4.7 missing </arg_value> leaks '</tool_call>' into a value, Qwen3-Coder variants).",
+        "Other llama.cpp discrepancies (text around Gemma calls, GLM-4.7 missing </arg_value> leaks '</tool_call>' into a value, Qwen3-Coder variants, a Kimi K3 tools section cut by max_tokens that non-streaming passes through as content while streaming drops it).",
         lambda c, fid: True)
 
 finding("ollama-gemma4-keys-with-spaces", "ollama", "engine_bug_known_upstream",
@@ -248,6 +261,7 @@ for f in F:
         "fixtures": ids,
         "repro": f"uv run canitoolcall run --engine {f['engine']} --id {rep} --observed all --env HF_HUB_OFFLINE=1",
         "direct_repro": f["direct_repro"],
+        **({"notes": f["notes"]} if f["notes"] else {}),
     })
 with open(f"{SNAP}/triage.jsonl", "w") as fh:
     for o in out:

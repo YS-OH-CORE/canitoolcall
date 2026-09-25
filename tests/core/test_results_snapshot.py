@@ -29,6 +29,7 @@ CLASSIFICATIONS = {
     "truncation_policy",
     "strict_grammar_variant",
     "not_generated_by_model",
+    "format_unverified",
     "not_applicable_stop_applied",
     "intended_engine_behaviour",
     "uncertain_history_render",
