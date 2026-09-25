@@ -1,0 +1,120 @@
+# CanIToolCall fixture spec v0.1
+
+A **fixture** is one raw model output together with the tools offered and the parse a correct engine must produce. Fixtures are language-neutral JSON Lines files, so any harness (Python, Rust, TypeScript, Go) can replay them.
+
+| File | What it defines |
+|---|---|
+| [`fixture.schema.json`](fixture.schema.json) | One fixture record (one JSONL line) |
+| [`family.schema.json`](family.schema.json) | `fixtures/<slug>/family.json`, the metadata shared by a family |
+| [`results.schema.json`](results.schema.json) | The results file written by `canitoolcall run` |
+
+Validate everything with:
+
+```sh
+uv run canitoolcall validate            # all of fixtures/
+uv run canitoolcall validate fixtures/qwen3-hermes/
+```
+
+## Layout
+
+```
+fixtures/
+  <family-slug>/
+    family.json           # family metadata (markers, reference models, notes link)
+    <topic>.jsonl         # one fixture per line, e.g. basic.jsonl, parallel.jsonl, edge.jsonl
+```
+
+The family slug is the directory name, the `family` field, and the prefix of every `id` (`qwen3-hermes/parallel-two-calls-unicode`). Ids are stable forever. If content changes meaningfully, add a new id and delete the old one; never repurpose an id.
+
+## Fixture fields
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | `<family>/<kebab-name>`, globally unique |
+| `family` | yes | family slug |
+| `models` | yes | HF repo ids that emit exactly this format. `models[0]` is the reference model for tokenizer and template |
+| `spec_version` | yes | `"0.1"` |
+| `provenance` | yes | `{kind, source_url, revision, license, generator?, template_sha256?, attribution?}` (see below) |
+| `tools` | yes | the tools offered, in OpenAI function format |
+| `raw_output` | yes | the **exact** completion: after the generation prompt, before the stop token, with special tokens written literally |
+| `expected` | one of | `{content, reasoning_content, tool_calls: [{name, arguments}]}` |
+| `expected_error` | one of | `{reason, accept: [no_tool_calls \| content_passthrough \| exception]}` for truncated or malformed output |
+| `tags` | yes | edge-case tags (enum in the schema, or custom `x-*`) |
+| `output_token_ids` | recommended | token ids of `raw_output` under `tokenizer` |
+| `tokenizer` | with ids | `{repo, revision, mode: hf\|mistral}` |
+| `generation_prompt` | optional | the text `add_generation_prompt` appends, when it matters (e.g. it pre-fills `<think>\n`) |
+| `thinking` | optional | whether thinking was enabled in the request; `null` means the template default |
+| `notes` | optional | free text |
+
+### Provenance is mandatory. Never invent formats.
+
+| `kind` | Use when | `source_url` points to | Typical license |
+|---|---|---|---|
+| `template_render` | You rendered an assistant tool-call message through the model's **official** chat template or encoder (HF Jinja, `openai-harmony`, `mistral_common`, DeepSeek/Moonshot encoder scripts) | the template file at the pinned revision | the model repo's license |
+| `engine_test` | You copied a raw output from an engine's test suite | the test file at a commit, with line anchor | vLLM/SGLang/transformers Apache-2.0, llama.cpp/Ollama MIT |
+| `bug_report` | The output reproduces a public issue | the issue or PR (comment) URL | `NOASSERTION` plus a short quote |
+| `recorded` | A real generation captured from the model | the recording log or dataset | as stated |
+
+`template_render` fixtures must name the `generator` script in `scripts/fixtures/` that reproduces them, and should record `template_sha256`.
+
+**History rendering is not generation.** A chat template serializes a *past* assistant turn. That can differ from what the model generates, and engines parse *generations*. Known cases (see `docs/formats/`):
+- Mistral v11 templates add `[CALL_ID]` that the model never generates.
+- gpt-oss templates put the recipient in the role header (`<|start|>assistant to=functions.X<|channel|>commentary`), while generations put it after the channel.
+- The generation stop token is cut: `<|call|>` for Harmony, `<|im_end|>` for Qwen, `<tool_call|>`/`<|tool_response>` for Gemma 4.
+
+When the two differ, prefer `engine_test` or `recorded` sources, and say so in `notes`.
+
+### Token ids come first
+
+Re-encoding text is lossy for some tokenizers (`mistral_common` never maps the text `[TOOL_CALLS]` to its control token). Generators therefore render with `apply_chat_template(tokenize=True)`, slice off the prompt ids, cut at the first stop id from `generation_config.json`, and store the ids in `output_token_ids` together with the `tokenizer` pin. `raw_output` is then the ids decoded with `skip_special_tokens=False`. Adapters must use `output_token_ids` when present and only fall back to tokenizing `raw_output` otherwise.
+
+## Expected results
+
+- `content` and `reasoning_content` are strings or `null`. `null` means absent; `""` is treated as `null`.
+- `tool_calls` are listed in emission order. `arguments` is a JSON **object** and is compared after parsing, so key order and whitespace do not matter, but value types do (`3` ≠ `"3"`).
+- Use `expected_error` for outputs that are truncated or malformed. The parser passes if it does one of the `accept` outcomes:
+  - `no_tool_calls`: no exception, no calls
+  - `content_passthrough`: no calls, and the text comes back as content
+  - `exception`: the engine's parser raised
+
+## Checks
+
+For each fixture and engine, the runner produces one non-streaming parse and one streaming parse per chunking strategy. Then it applies these checks:
+
+| Check | Passes when |
+|---|---|
+| `expected_match` | the result equals `expected` (per strategy, including `nonstream`) |
+| `expected_error` | the outcome is in `expected_error.accept` |
+| `stream_equals_nonstream` | every streaming result equals the non-streaming result |
+| `split_invariance` | all streaming results are equal to one another |
+| `no_leakage` | no family marker appears in content, reasoning or argument strings unless `expected` contains it verbatim |
+| `arguments_json` | every `arguments_raw` parses as a JSON object |
+| `arguments_schema` | every call's arguments validate against the tool's `parameters` schema, and the name is one of the offered tools |
+| `parallel_order` | the number of calls and their order of names match `expected` |
+
+A case's status is the worst over its checks: `fail` > `error` > `soft_pass` > `pass`. It is `unsupported` when the adapter has no parser configuration for the family or model. `error` is reserved for **harness** problems; an exception raised by the engine's own parser is a parse outcome and is judged by the checks.
+
+## Chunking strategies
+
+Streams are built from groups of **token ids**, never from characters, because engines never split a token and special tokens are atomic. Each engine detokenizes the groups with its own incremental detokenizer.
+
+| id | Meaning |
+|---|---|
+| `one` | the whole output in one delta |
+| `token` | one token per delta |
+| `rand:<seed>:<max>` | seeded random groups of 1..`max` tokens (Python `random.Random(seed)`) |
+| `char:<seed>` | synthetic per-character stress (can split special tokens). Opt-in only and reported separately, because it is not realistic |
+
+The default set is `one`, `token`, and `rand:1:8` … `rand:5:8`. The same seed always gives the same grouping, on every machine.
+
+## Normalization policy `soft-v1`
+
+Engines disagree on whitespace in ways users rarely notice. Results distinguish:
+- **strict** equality: `""` becomes `null`; everything else is compared exactly (arguments as parsed JSON).
+- **soft** equality (`soft-v1`): `content` and `reasoning_content` are stripped of leading and trailing whitespace, and a whitespace-only string becomes `null`.
+
+Strict equality gives `pass`. Soft-only equality gives `soft_pass`, which the matrix shows separately. Everything else is `fail`.
+
+## Versioning
+
+`spec_version` follows `MAJOR.MINOR`. Adding optional fields or tags is a minor bump. Changing required fields or semantics is a major bump. Harnesses must reject fixtures with an unknown major version.

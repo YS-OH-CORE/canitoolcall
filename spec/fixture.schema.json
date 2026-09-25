@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://canitoolcall.dev/spec/0.1/fixture.schema.json",
+  "title": "CanIToolCall fixture",
+  "description": "One recorded raw model output plus the tools offered and the expected parsed result. Stored one per line in fixtures/<family>/*.jsonl. See spec/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "family", "models", "spec_version", "provenance", "tools", "raw_output", "tags"],
+  "oneOf": [
+    { "required": ["expected"], "not": { "required": ["expected_error"] } },
+    { "required": ["expected_error"], "not": { "required": ["expected"] } }
+  ],
+  "properties": {
+    "id": {
+      "description": "Globally unique, stable id: <family>/<short-kebab-name>. Never reuse an id for different content.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]*/[a-z0-9][a-z0-9._-]*$"
+    },
+    "family": {
+      "description": "Family slug; must equal the directory name under fixtures/ and the id prefix.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]*$"
+    },
+    "models": {
+      "description": "Hugging Face repo ids of the models that emit exactly this format. The first entry is the reference model whose tokenizer and chat template are used for token ids and parser configuration.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" }
+    },
+    "spec_version": { "const": "0.1" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "tools": {
+      "description": "Tools offered in the request, in OpenAI Chat Completions function format.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/tool" }
+    },
+    "raw_output": {
+      "description": "The exact completion text the model generated, AFTER the generation prompt and BEFORE the stop token, with special tokens written out literally (e.g. \"<tool_call>\", \"<|call|>\"). Not trimmed or normalized.",
+      "type": "string"
+    },
+    "output_token_ids": {
+      "description": "Token ids of raw_output under the reference model's tokenizer (models[0], tokenizer.revision). Strongly recommended: required when raw_output cannot be re-encoded losslessly (e.g. mistral_common never maps the text \"[TOOL_CALLS]\" to its control token). Adapters must prefer these over re-tokenizing raw_output.",
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "generation_prompt": {
+      "description": "The text the chat template appends for add_generation_prompt=True (e.g. \"<|im_start|>assistant\\n<think>\\n\"). Needed when the prompt pre-fills a reasoning opener, so raw_output starts inside the reasoning. Defaults to the family's default_generation_prompt.",
+      "type": "string"
+    },
+    "thinking": {
+      "description": "Whether the request enabled thinking (chat_template_kwargs.enable_thinking / reasoning_format). null = the template's default.",
+      "type": ["boolean", "null"]
+    },
+    "tokenizer": {
+      "description": "Pin for the tokenizer that produced output_token_ids.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "revision"],
+      "properties": {
+        "repo": { "type": "string" },
+        "revision": { "type": "string", "description": "HF commit sha." },
+        "mode": { "enum": ["hf", "mistral"], "default": "hf" }
+      }
+    },
+    "expected": { "$ref": "#/$defs/expected" },
+    "expected_error": { "$ref": "#/$defs/expected_error" },
+    "tags": {
+      "description": "Edge-case tags. Core tags are listed in the enum; project-specific tags must start with \"x-\".",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "anyOf": [
+          {
+            "enum": [
+              "single-call",
+              "parallel-calls",
+              "no-call",
+              "nested-json",
+              "unicode",
+              "empty-arguments",
+              "marker-in-arguments",
+              "text-before-call",
+              "text-after-call",
+              "reasoning",
+              "reasoning-prefilled",
+              "multi-turn",
+              "numeric-arguments",
+              "string-escapes",
+              "long-arguments",
+              "truncated",
+              "malformed",
+              "regression"
+            ]
+          },
+          { "type": "string", "pattern": "^x-[a-z0-9-]+$" }
+        ]
+      }
+    },
+    "notes": { "type": "string" }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source_url", "revision", "license"],
+      "properties": {
+        "kind": {
+          "description": "template_render: produced by rendering an assistant message through the official chat template/encoder (script in scripts/fixtures/). engine_test: copied from an engine's test suite. bug_report: taken from a public issue or PR. recorded: a real generation captured from a model.",
+          "enum": ["template_render", "engine_test", "bug_report", "recorded"]
+        },
+        "source_url": {
+          "description": "Where the content comes from: the template file, the test file (with line anchor), the issue/PR, or the recording log.",
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "revision": {
+          "description": "Commit sha, tag or release of the source (HF repo revision, engine commit, issue comment id).",
+          "type": "string",
+          "minLength": 1
+        },
+        "license": {
+          "description": "SPDX license identifier of the source content (e.g. Apache-2.0, MIT). Use NOASSERTION only for bug_report text.",
+          "type": "string",
+          "minLength": 1
+        },
+        "generator": {
+          "description": "Repo-relative path of the script that produced or imported this fixture (required for template_render).",
+          "type": "string"
+        },
+        "template_sha256": {
+          "description": "sha256 of the chat template (or encoder source) used for template_render fixtures.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "attribution": {
+          "description": "Copyright/attribution line required by the source license.",
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "template_render" } } },
+          "then": { "required": ["generator"] }
+        }
+      ]
+    },
+    "tool": {
+      "type": "object",
+      "required": ["type", "function"],
+      "properties": {
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "description": { "type": "string" },
+            "parameters": { "type": "object" },
+            "strict": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "expected": {
+      "description": "The correct parse. null content/reasoning_content means absent (empty or missing).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "reasoning_content", "tool_calls"],
+      "properties": {
+        "content": { "type": ["string", "null"] },
+        "reasoning_content": { "type": ["string", "null"] },
+        "tool_calls": {
+          "description": "In emission order. Arguments are compared as parsed JSON objects.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "arguments"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "arguments": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "expected_error": {
+      "description": "For truncated or malformed output: the parser must fail gracefully. A result passes when its outcome is in `accept`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "accept"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "accept": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "description": "no_tool_calls: no calls returned and no exception. content_passthrough: no calls, and the raw text (modulo whitespace) is returned as content. exception: the engine parser raised a documented error.",
+            "enum": ["no_tool_calls", "content_passthrough", "exception"]
+          }
+        }
+      }
+    }
+  }
+}

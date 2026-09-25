@@ -1,0 +1,27 @@
+# Isolated per-engine environments and spike scratch space (never committed)
+.venvs/
+.spikes/
+# Engine source clones, compiled harnesses, vocab-only GGUFs (built by scripts/engines/*.sh)
+.engines/
+
+# Run outputs (the matrix site is generated from these; publish via CI artifacts)
+/results/
+/site/_build/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://canitoolcall.dev/spec/0.1/results.schema.json",
+  "title": "CanIToolCall run results",
+  "description": "Output of `canitoolcall run --engine E`: one file per engine run, written to results/<engine>-<engine_version>.json. The matrix site is built ONLY from these files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "canitoolcall_version", "engine", "run", "cases", "summary"],
+  "properties": {
+    "schema_version": { "const": "0.1" },
+    "canitoolcall_version": { "type": "string" },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "enum": ["vllm", "sglang", "llamacpp", "ollama", "transformers"] },
+        "version": { "type": "string", "description": "Version actually imported/built (e.g. 0.30.0 or a git sha)." },
+        "commit": { "type": ["string", "null"] },
+        "details": { "type": "object", "description": "Adapter-specific pins: key dependency versions, build flags, harness sha." }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "finished_at", "platform", "python", "fixtures_digest", "strategies", "normalization"],
+      "properties": {
+        "started_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "platform": { "type": "string" },
+        "python": { "type": "string" },
+        "fixtures_digest": { "type": "string", "description": "sha256 over the sorted fixture ids and their canonical JSON." },
+        "strategies": { "type": "array", "items": { "type": "string" } },
+        "normalization": { "type": "string", "description": "Name of the normalization policy used for soft comparisons (see spec/README.md)." }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case" }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["totals", "by_family"],
+      "properties": {
+        "totals": { "$ref": "#/$defs/counts" },
+        "by_family": { "type": "object", "additionalProperties": { "$ref": "#/$defs/counts" } }
+      }
+    }
+  },
+  "$defs": {
+    "status": { "enum": ["pass", "soft_pass", "fail", "error", "unsupported"] },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "soft_pass", "fail", "error", "unsupported"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "soft_pass": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 },
+        "unsupported": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "parse_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "reasoning_content", "tool_calls", "exception"],
+      "properties": {
+        "content": { "type": ["string", "null"] },
+        "reasoning_content": { "type": ["string", "null"] },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "arguments_raw"],
+            "properties": {
+              "name": { "type": "string" },
+              "arguments_raw": { "type": "string", "description": "Arguments exactly as the engine returned them (JSON text in OpenAI format)." }
+            }
+          }
+        },
+        "exception": { "type": ["string", "null"], "description": "\"ExcType: message\" if the ENGINE's parser raised." }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check", "strategy", "status"],
+      "properties": {
+        "check": {
+          "enum": [
+            "expected_match",
+            "expected_error",
+            "stream_equals_nonstream",
+            "split_invariance",
+            "no_leakage",
+            "arguments_json",
+            "arguments_schema",
+            "parallel_order"
+          ]
+        },
+        "strategy": { "type": "string", "description": "\"nonstream\" or a chunking strategy id (e.g. \"one\", \"token\", \"rand:3:8\")." },
+        "status": { "$ref": "#/$defs/status" },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_id", "family", "status", "checks"],
+      "properties": {
+        "fixture_id": { "type": "string" },
+        "family": { "type": "string" },
+        "status": { "$ref": "#/$defs/status", "description": "Worst status over all checks (fail > error > soft_pass > pass); unsupported if the adapter does not support the family/model." },
+        "parser_config": { "type": "object", "description": "Exact parser configuration used (parser names, template source + sha256, reasoning/thinking flags, tokenizer mode)." },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+        "observed": {
+          "type": "object",
+          "description": "Raw observations; runners include them at least for non-pass cases so failures are reproducible.",
+          "additionalProperties": false,
+          "properties": {
+            "nonstream": { "$ref": "#/$defs/parse_result" },
+            "streams": { "type": "object", "additionalProperties": { "$ref": "#/$defs/parse_result" } }
+          }
+        },
+        "harness_error": { "type": ["string", "null"], "description": "Set when status is error: the ADAPTER/harness failed (not the engine parser)." }
+      }
+    }
+  }
+}
