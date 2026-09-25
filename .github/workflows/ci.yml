@@ -32,9 +32,9 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uv sync
       - name: ruff check
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
       - name: ruff format
-        run: uv run ruff format --check src tests
+        run: uv run ruff format --check src tests scripts
       - name: mypy
         run: uv run mypy
       - name: validate fixtures against the spec
@@ -82,3 +82,5 @@ jobs:
           /tmp/smoke/bin/canitoolcall --version
           /tmp/smoke/bin/canitoolcall validate
           /tmp/smoke/bin/canitoolcall engines
+          /tmp/smoke/bin/canitoolcall matrix --results results/2026-09-25 --out /tmp/smoke-site
+          test -f /tmp/smoke-site/index.html

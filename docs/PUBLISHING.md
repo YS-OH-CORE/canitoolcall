@@ -7,21 +7,22 @@ Nothing is pushed or published from the development machine. The repository, the
 - [ ] Check that the names are still free:
   - PyPI: `https://pypi.org/pypi/canitoolcall/json` returns 404.
   - GitHub: the org or repo `canitoolcall` is available.
-- [ ] Replace the placeholders:
-  - `<owner>` in `README.md`: the clone URL and the matrix URL.
-  - `[project.urls]` in `pyproject.toml`.
+- [ ] Decide which identity publishes the project. Every commit so far is authored with the repository-local `git config user.email`; if that should be a personal address, set it and rewrite the (still local) history before the first push, for example `git rebase -r --root --exec 'git commit --amend --no-edit --reset-author'`. Check whether an employer agreement covers the project.
+- [ ] Create the GitHub owner (org or user) that will host the repository, then replace the placeholders:
+  - `<owner>` in `README.md` (the clone URL and the matrix URL) and in the `fancy-pypi-readme` substitution in `pyproject.toml` (it makes the README's relative links absolute on PyPI).
+  - Add `[project.urls]` to `pyproject.toml`: `Homepage`, `Issues` and `Changelog` (`.../blob/main/CHANGELOG.md`) for the real repository.
   - The contact method in `CODE_OF_CONDUCT.md` (search for `CONTACT METHOD`).
-  - The stub notice in `SECURITY.md`.
+  - `python scripts/check_release.py` must then report no placeholders; the release workflow runs it too.
 - [ ] Run the full local check, and confirm the build is clean:
 
   ```sh
-  uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy && uv run pytest
+  uv run ruff check src tests scripts && uv run ruff format --check src tests scripts && uv run mypy && uv run pytest
   uv run canitoolcall validate
   uv build && uvx twine check --strict dist/*
   ```
 
 - [ ] Audit the fixtures before release. Every fixture must have provenance. Re-run every `scripts/fixtures/*/build.py`, and check that `git diff` stays clean.
-- [ ] Make sure no results file or built site is committed (`/results/` and `/site/_build/` are gitignored), and that `.spikes/`, `.engines/` and `.venvs/` are ignored too.
+- [ ] Make sure only dated snapshots under `results/YYYY-MM-DD/` are committed (other results files and `/site/_build/` are gitignored), and that `.engines/` and `.venvs/` are ignored too.
 
 ## 2. GitHub repository
 

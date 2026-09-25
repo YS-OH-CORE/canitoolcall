@@ -25,7 +25,7 @@ It sends a short series of scripted tool-use requests, first without streaming a
 - a follow-up turn after a tool result
 - reasoning followed by a call
 
-The API key is read from `$OPENAI_API_KEY`; use `--api-key-env` to name another variable. The key is only sent in the `Authorization` header and is never logged. Add `--json report.json` to keep a machine-readable report. The exit code is `0` when everything passes, `1` on failures and `2` on usage errors.
+No API key is sent unless you set one: the key is read from `$CANITOOLCALL_API_KEY`, or from the variable you name with `--api-key-env` (pass `--api-key-env OPENAI_API_KEY` to use that one; it is never read by default, so an exported OpenAI key cannot leak to a third-party endpoint). The key is only sent in the `Authorization` header, only to `--base-url` (redirects are not followed), and is never logged. The probe refuses to send a key over plain `http://` to a host other than localhost unless you pass `--allow-insecure`. Add `--json report.json` to keep a machine-readable report. The exit code is `0` when everything passes, `1` on failures and `2` on usage errors or an unreachable endpoint.
 
 **Replay the offline suite against an engine.** This needs a checkout, because each engine runs in its own isolated environment:
 
@@ -39,7 +39,7 @@ uv run canitoolcall matrix              # renders site/_build/index.html from re
 
 Other useful commands:
 
-- `canitoolcall engines` lists the engine adapters and the interpreter each one would use.
+- `canitoolcall engines` lists the engine adapters, whether each one is set up, and the interpreter it uses.
 - `canitoolcall validate` checks fixtures against the spec.
 - `canitoolcall matrix --results results/2026-09-25` renders the committed snapshot of real runs through all five engines. [`results/2026-09-25/README.md`](results/2026-09-25/README.md) explains the snapshot, and its `triage.jsonl` classifies every failure, with a repro command for each.
 
@@ -52,7 +52,7 @@ Every fixture is parsed once without streaming and once for each **chunking stra
 - `token`: one token per delta
 - `rand:1:8` … `rand:5:8`: five seeded random groupings
 
-Each strategy is seeded, so it produces the same deltas on every machine.
+Each strategy is seeded, so it produces the same deltas on every machine. Multi-token strategies only count for engines whose servers can put several tokens in one delta (vLLM, SGLang). llama-server, Ollama and transformers `serve` stream one token per event, so for them only `token` counts; the others still run and are reported as synthetic.
 
 | Check | Passes when |
 |---|---|
@@ -78,7 +78,7 @@ A case gets the worst status over its checks: `fail` > `error` > `soft pass` > `
   | SGLang | 0.5.20 |
   | llama.cpp | `a25c9865` |
   | HF transformers | 5.17.0 |
-  | Ollama | `7af39318` (stretch goal) |
+  | Ollama | `7af39318` (built-in parsers) |
 
 - **How adapters run the parsers:**
   - Python engines: the adapter imports the engine's parser classes and calls them the way the engine's own server does.
@@ -123,7 +123,7 @@ Use `--canitoolcall-fixtures PATH` to test against your own copy of the corpus.
 - the failing checks and strategies
 - the observed parse, as a diff against the expected one
 - the exact parser configuration
-- a one-line command that replays just that fixture file
+- a one-line command that replays just that fixture (`--id`)
 
 ## Contributing
 
@@ -131,4 +131,11 @@ Adding a model family takes a single PR; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE). Some fixtures come from engine test suites under their own licenses (Apache-2.0 or MIT). The license is recorded in each fixture's `provenance`.
+The code is Apache-2.0; see [LICENSE](LICENSE). The fixture corpus quotes material under other licenses, recorded per fixture in `provenance.license`, with the full notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md):
+
+- template renders from model repositories: Apache-2.0 (Qwen, gpt-oss, Gemma, Mistral), MIT (DeepSeek, GLM-4.x), the Kimi K2 modified MIT license, the Kimi K3 license, the GLM-5.3 license;
+- short spec examples from Meta's Llama 3.3 and Llama 4 prompt-format docs (Llama 3.3 / Llama 4 Community License);
+- cases copied from engine test suites: Apache-2.0 (vLLM, SGLang, transformers, openai-harmony) and MIT (llama.cpp, Ollama);
+- short quotes from public GitHub issues (`NOASSERTION`, quoted with attribution).
+
+`harnesses/llamacpp/replay.cpp` contains a block copied from llama.cpp (MIT), marked in the file.

@@ -2,7 +2,9 @@
 # setup script, replay the whole fixture corpus through the engine's own
 # parsers, build the static matrix site from the results files, and deploy it
 # to GitHub Pages. No secrets are needed: engines, tokenizers and templates are
-# public, and no model weights are downloaded.
+# public, and no model weights are downloaded. An optional HF_TOKEN repository
+# secret raises the Hub's anonymous rate limit for the cache prefetch; replays
+# themselves run with HF_HUB_OFFLINE=1.
 name: nightly
 
 on:
@@ -41,7 +43,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: matrix.engine == 'ollama'
         with:
-          go-version: stable
+          # Ollama's go.mod at the pinned commit says "go 1.26.0"; GOTOOLCHAIN=auto
+          # in scripts/engines/ollama.sh still honours a newer toolchain line.
+          go-version: "1.26.0"
           cache: false
       - name: Cache tokenizer and template files (never weights)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -65,11 +69,16 @@ jobs:
           fi
           bash "$script"
           echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Prefetch pinned tokenizer and template files
+        if: steps.setup.outputs.ready == 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run --no-project --with huggingface-hub==1.33.0 python scripts/engines/prefetch_hf.py
       - name: Replay the fixtures
         if: steps.setup.outputs.ready == 'true'
         run: |
           set +e
-          uv run canitoolcall run --engine "$ENGINE" --out results
+          uv run canitoolcall run --engine "$ENGINE" --out results --env HF_HUB_OFFLINE=1
           code=$?
           set -e
           # 0: everything passed. 1: conformance failures, which are the data this

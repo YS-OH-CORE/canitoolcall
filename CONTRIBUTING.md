@@ -12,7 +12,7 @@ By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md). Report 
 
 ```sh
 uv sync                                   # main env: CLI, runner, checks, matrix (Python 3.12)
-uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy && uv run pytest
+uv run ruff check src tests scripts && uv run ruff format --check src tests scripts && uv run mypy && uv run pytest
 ```
 
 CI runs exactly that command, plus `canitoolcall validate`, `uv build` and `twine check`. Engine tests (`@pytest.mark.engine("vllm")`) skip themselves until you build that engine's environment with `bash scripts/engines/<engine>.sh`. That script puts the engine in an **isolated** venv under `.venvs/<engine>/`. Never install vLLM, SGLang or torch into the main env.
@@ -112,6 +112,7 @@ An adapter counts only if it runs **the engine's own parser code at a pinned ver
      - `parse`
      - `parse_stream`: detokenize each group of ids with **the engine's own** incremental detokenizer, then call its streaming parser the way its server does
    - Optionally implement `special_token_ids`, which enables the `special` strategy.
+   - Set `tokens_per_step = "one"` if the engine's server streams one event per generated token; multi-token chunkings are then reported as synthetic instead of counted.
    - Follow the ten rules in the adapter contract in [`docs/DESIGN.md`](docs/DESIGN.md). Each rule exists because an adapter broke without it.
 3. **Compiled engines.** For an engine like llama.cpp or Ollama, put the harness in `harnesses/<engine>/`. It speaks JSON lines, and one process serves a whole run.
 4. **Register it.** Add one line to the `ENGINES` registry in `src/canitoolcall/adapters/__init__.py`, and add the engine to the matrix in `.github/workflows/nightly.yml`.

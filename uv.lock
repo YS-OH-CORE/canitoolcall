@@ -114,7 +114,6 @@ dependencies = [
 
 [package.optional-dependencies]
 transformers = [
-    { name = "jinja2" },
     { name = "jmespath" },
     { name = "transformers" },
 ]
@@ -130,7 +129,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "jinja2", marker = "extra == 'transformers'", specifier = ">=3.1" },
     { name = "jmespath", marker = "extra == 'transformers'", specifier = ">=1.0" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "transformers", marker = "extra == 'transformers'", specifier = "==5.17.0" },

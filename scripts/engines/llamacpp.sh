@@ -80,9 +80,11 @@ if [[ $venv == 1 ]]; then
   # optional tokenizer backends the converter imports for some repos (Kimi:
   # tiktoken/blobfile; Mistral-format repos: mistral-common, see conversion/base.py),
   # and huggingface_hub for tokenizer-only downloads.
-  EXTRAS=(tiktoken blobfile "mistral-common[image,audio]==1.12.0" "huggingface_hub>=0.34")
+  # Exact pins (the versions the vocab GGUFs were built with); huggingface_hub differs
+  # per env because transformers 4.57.6 needs <1.0 and transformers 5.17.0 needs >=1.0.
+  EXTRAS=("tiktoken==0.14.0" "blobfile==3.3.0" "mistral-common[image,audio]==1.12.0")
   uv pip install -q -p "$VENV/bin/python" \
-    -r "$SRC/requirements/requirements-convert_hf_to_gguf.txt" "${EXTRAS[@]}"
+    -r "$SRC/requirements/requirements-convert_hf_to_gguf.txt" "${EXTRAS[@]}" "huggingface_hub==0.36.2"
   echo "venv ready: $VENV"
 
   # Fallback converter env for repos whose tokenizer files need transformers 5
@@ -92,7 +94,7 @@ if [[ $venv == 1 ]]; then
   grep -v '^transformers' "$SRC/requirements/requirements-convert_legacy_llama.txt" > "$ENGINE/requirements-convert-tf5.txt"
   uv pip install -q -p "$TF5/bin/python" --extra-index-url https://download.pytorch.org/whl/cpu \
     -r "$ENGINE/requirements-convert-tf5.txt" "$(grep "^torch" "$SRC/requirements/requirements-convert_hf_to_gguf.txt")" \
-    "transformers==5.17.0" "${EXTRAS[@]}"
+    "transformers==5.17.0" "${EXTRAS[@]}" "huggingface_hub==1.33.0"
   echo "fallback converter env ready: $TF5"
 fi
 

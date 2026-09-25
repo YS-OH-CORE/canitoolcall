@@ -31,10 +31,12 @@ jobs:
         with:
           enable-cache: false
       - run: uv sync
+      - name: no pre-publication placeholders left
+        run: uv run python scripts/check_release.py
       - name: lint, types, tests
         run: |
-          uv run ruff check src tests
-          uv run ruff format --check src tests
+          uv run ruff check src tests scripts
+          uv run ruff format --check src tests scripts
           uv run mypy
           uv run canitoolcall validate
           uv run pytest
@@ -50,6 +52,15 @@ jobs:
           fi
       - name: twine check
         run: uvx twine check --strict dist/*
+      - name: smoke-test the wheel in a clean environment
+        run: |
+          uv venv --python 3.12 /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/canitoolcall --version
+          /tmp/smoke/bin/canitoolcall validate
+          /tmp/smoke/bin/canitoolcall engines
+          /tmp/smoke/bin/canitoolcall matrix --results results/2026-09-25 --out /tmp/smoke-site
+          test -f /tmp/smoke-site/index.html
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist

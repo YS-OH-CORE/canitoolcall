@@ -1,14 +1,14 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1"]
 build-backend = "hatchling.build"
 
 [project]
 name = "canitoolcall"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 description = "caniuse.com for tool calling: a neutral conformance suite for tool-call and reasoning parsers across open-weight model families and inference engines."
-readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+# Third-party texts the fixture corpus and harness require to travel with every copy.
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
 requires-python = ">=3.10"
 authors = [{ name = "CanIToolCall contributors" }]
 keywords = ["llm", "tool-calling", "function-calling", "conformance", "vllm", "sglang", "llama.cpp", "ollama"]
@@ -17,6 +17,14 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Testing",
     "Framework :: Pytest",
@@ -38,7 +46,7 @@ dependencies = [
 #     them, and the adapters never import them from this env anyway. scripts/engines/<engine>.sh pins
 #     the version and builds the isolated .venvs/<engine> (vllm==0.30.0, sglang==0.5.20).
 #   llamacpp / ollama: compiled harnesses (harnesses/<engine>/), built by scripts/engines/<engine>.sh.
-transformers = ["transformers==5.17.0", "jinja2>=3.1", "jmespath>=1.0"]
+transformers = ["transformers==5.17.0", "jmespath>=1.0"]
 
 [project.scripts]
 canitoolcall = "canitoolcall.cli:main"
@@ -46,9 +54,10 @@ canitoolcall = "canitoolcall.cli:main"
 [project.entry-points.pytest11]
 canitoolcall = "canitoolcall.pytest_plugin"
 
-[project.urls]
-Homepage = "https://github.com/canitoolcall/canitoolcall"
-Issues = "https://github.com/canitoolcall/canitoolcall/issues"
+# [project.urls] is deliberately absent until the repository exists: metadata of an
+# uploaded release cannot be edited, and an unclaimed namespace could be registered
+# by anyone. docs/PUBLISHING.md section 1 adds Homepage/Issues/Changelog, and
+# scripts/check_release.py refuses to release without them.
 
 [dependency-groups]
 dev = [
@@ -60,6 +69,18 @@ dev = [
 
 [tool.hatch.version]
 path = "src/canitoolcall/__init__.py"
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# PyPI shows the README without the repository: turn relative links into absolute
+# GitHub links. The owner is filled in at release (docs/PUBLISHING.md; scripts/check_release.py).
+pattern = '\]\((?!https?://|#|mailto:)([^)\s]+)\)'
+replacement = '](https://github.com/<owner>/canitoolcall/blob/main/\1)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/canitoolcall"]
@@ -73,7 +94,25 @@ packages = ["src/canitoolcall"]
 "site/templates" = "canitoolcall/_data/templates"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "spec", "fixtures", "tests", "docs", "scripts", "harnesses", "site/templates", "README.md", "LICENSE", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md"]
+# Anchored ("/x"): unanchored patterns match at any depth (e.g. results/*/README.md).
+include = [
+    "/src",
+    "/spec",
+    "/fixtures",
+    "/tests",
+    "/docs",
+    "/scripts",
+    "/harnesses",
+    "/site/templates",
+    "/README.md",
+    "/LICENSE",
+    "/LICENSES",
+    "/THIRD_PARTY_NOTICES.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/CODE_OF_CONDUCT.md",
+    "/SECURITY.md",
+]
 
 
 [tool.pytest.ini_options]
@@ -87,6 +126,8 @@ markers = [
 line-length = 120
 target-version = "py310"
 src = ["src", "tests"]
+# Committed results snapshots keep the one-off triage/repro scripts exactly as run.
+extend-exclude = ["results"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

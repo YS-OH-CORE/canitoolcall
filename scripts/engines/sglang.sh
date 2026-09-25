@@ -69,6 +69,16 @@ else:
     sys.exit("no cp312 manylinux wheel for " + arch)
 ' "$arch"
   )
+  # Digests committed here, so a compromised index cannot swap the wheel.
+  case "$wheel_name" in
+    sglang-0.5.20-cp312-cp312-manylinux_2_34_aarch64.whl) pinned=4eeb321ff70bef7eb9643260c06f3e47a76d8a15eaefbb95e06f2681bc74b014 ;;
+    sglang-0.5.20-cp312-cp312-manylinux_2_34_x86_64.whl) pinned=ffaced7e91c3536c63077b16b08210b5c1a2f362418e9841a8767d5e019cf08a ;;
+    *) echo "no committed sha256 for $wheel_name" >&2; exit 1 ;;
+  esac
+  if [ "$pinned" != "$wheel_sha" ]; then
+    echo "PyPI reports sha256 $wheel_sha for $wheel_name, but the committed digest is $pinned" >&2
+    exit 1
+  fi
   wheel="$ENGINE_DIR/$wheel_name"
   [ -f "$wheel" ] || curl -fsSL -o "$wheel" "$wheel_url"
   got="$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$wheel")"

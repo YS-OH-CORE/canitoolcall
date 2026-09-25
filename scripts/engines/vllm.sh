@@ -52,6 +52,22 @@ f = files[0]
 print(f["filename"], f["url"], f["digests"]["sha256"])
 ' "$arch"
 )
+# Digests committed here, so a compromised index cannot swap the wheel (PyPI's
+# JSON is only used to find the URL). Other versions fall back to PyPI's digest.
+pinned_sha() {
+  case "$1" in
+    vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl) echo eb3e11bab695d085098579a6eda2d602419adec3826ebfbcce9a3ffa543eb62e ;;
+    vllm-0.30.0-cp38-abi3-manylinux_2_28_x86_64.whl) echo ef52ee58c410ead0b8afb190838fa4cbcb52075596f67862a03859d984966ac4 ;;
+    *) echo "" ;;
+  esac
+}
+PINNED_SHA="$(pinned_sha "$WHEEL_NAME")"
+if [[ -z "$PINNED_SHA" ]]; then
+  echo "warning: no committed sha256 for $WHEEL_NAME; trusting PyPI's ($WHEEL_SHA)" >&2
+elif [[ "$PINNED_SHA" != "$WHEEL_SHA" ]]; then
+  echo "PyPI reports sha256 $WHEEL_SHA for $WHEEL_NAME, but the committed digest is $PINNED_SHA" >&2
+  exit 1
+fi
 WHEEL="$ENGINE_DIR/$WHEEL_NAME"
 
 sha256_of() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
@@ -86,11 +102,11 @@ uv python install 3.12 >/dev/null
 uv venv -q --allow-existing -p 3.12 "$VENV"
 
 # --- 4. minimal pinned deps ---------------------------------------------------
-# The set the parser / tokenizer / detokenizer imports need (found by the
-# engine spike, .spikes/setup.sh), pinned to the versions it was verified with.
+# The set the parser / tokenizer / detokenizer imports need, pinned to the
+# versions the adapter was verified with.
 DEPS=(
   "transformers==5.17.0" "tokenizers==0.23.2" "huggingface-hub==1.33.0"
-  "pydantic==2.13.5" "openai==3.19.2" "partial-json-parser" "regex==2026.9.10"
+  "pydantic==2.13.5" "openai==3.19.2" "partial-json-parser==0.2.1.1.post7" "regex==2026.9.10"
   "openai-harmony==0.0.8" "mistral-common==1.12.0" "fastapi==0.136.3"
   "msgspec==0.21.1" "cachetools==7.2.0" "psutil==7.2.2" "jsonschema==4.26.0"
   "pyyaml==6.0.3" "sentencepiece==0.2.2" "tiktoken==0.14.0" "protobuf==7.36.2"
