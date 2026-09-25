@@ -139,3 +139,5 @@ The code is Apache-2.0; see [LICENSE](LICENSE). The fixture corpus quotes materi
 - short quotes from public GitHub issues (`NOASSERTION`, quoted with attribution).
 
 `harnesses/llamacpp/replay.cpp` contains a block copied from llama.cpp (MIT), marked in the file.
+
+**Built with Llama.** The fixture corpus includes Llama 3.3 chat-template renders and short quotes from Meta's Llama 3.3 and Llama 4 prompt-format docs, distributed under the Llama 3.3 and Llama 4 Community Licenses (copies in `LICENSES/`). Llama 3.3 is licensed under the Llama 3.3 Community License, Copyright © Meta Platforms, Inc. All Rights Reserved. Llama 4 is licensed under the Llama 4 Community License, Copyright © Meta Platforms, Inc. All Rights Reserved.

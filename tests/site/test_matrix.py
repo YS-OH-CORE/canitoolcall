@@ -297,6 +297,7 @@ def test_render_site(tmp_path: Path, sample_fixtures_dir: Path) -> None:
     assert (out / "assets" / "style.css").is_file()
     assert (out / "data" / "vllm-0.30.0.json").read_bytes() == (results / "vllm-0.30.0.json").read_bytes()
     assert (out / ".nojekyll").is_file()
+    assert "Built with Llama" in html  # Llama Community License 1.b.i(B)
 
     data = json.loads((out / "matrix.json").read_text(encoding="utf-8"))
     cells = {(c["family"], c["engine"]): c for c in data["cells"]}

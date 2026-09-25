@@ -43,6 +43,10 @@ every distribution are in `LICENSES/`.
 
 ## Required attribution notices
 
+Built with Llama.
+
+Clause 1.b.i of the Llama 3.3 and Llama 4 Community Licenses requires anyone who distributes Llama Materials to provide a copy of the agreement (`LICENSES/llama3.3-community.txt`, `LICENSES/llama4-community.txt`) and to prominently display "Built with Llama" on related documentation. This project displays it in the README License section and in the footer of every page of the matrix site. Clause 1.b.iii requires the notices below.
+
 Llama 3.3 is licensed under the Llama 3.3 Community License, Copyright © Meta Platforms, Inc. All Rights Reserved.
 
 Llama 4 is licensed under the Llama 4 Community License, Copyright © Meta Platforms, Inc. All Rights Reserved.
