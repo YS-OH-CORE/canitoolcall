@@ -29,7 +29,9 @@ Provenance of every fixture written here:
   around calls comes from engine tests instead. There is no template render for
   Llama 4: the mirror's Llama 4 template differs from Meta's (different git blob),
   so Llama 4 fixtures come from Meta's recorded examples and engine tests only.
-* ``recorded``: model outputs quoted from Meta's prompt-format docs.
+* ``spec_example``: model outputs quoted verbatim from Meta's prompt-format docs
+  (``recorded.jsonl``; the file name predates the kind), plus one derived token-prefix
+  truncation of such a quote, tagged ``x-derived-truncation``.
 * ``engine_test`` / ``bug_report``: see ``imported.py``.
 
 Run from the repo root (deterministic; re-running leaves ``git diff`` clean)::
@@ -395,24 +397,30 @@ def build_renders(ld: Loaded) -> tuple[list[dict[str, Any]], dict[str, Rendered]
     return records, renders
 
 
-# --------------------------------------------------------------------------- recorded (Meta docs)
+# --------------------------------------------------------------------------- spec examples (Meta docs)
 
 META_SHA = "0e0b8c519242d5833d8c11bffc1232b77ad7f301"
 META_NOTE = (
-    "Quoted from the 'Model Response Format' block of Meta's prompt-format doc; these blocks are model outputs "
-    "(the doc's base-model examples stop mid-sentence at the generation limit). The stop token that ends the block "
-    "is cut, as spec/README.md requires."
+    "Quoted verbatim from the 'Model Response Format' block of Meta's prompt-format doc (spec_example: official "
+    "format documentation, not a generation captured by this project). The stop token that ends the block is cut, "
+    "as spec/README.md requires."
 )
+LLAMA_NOTICE = {
+    "LicenseRef-llama3.3-community": "Llama 3.3 is licensed under the Llama 3.3 Community License, "
+    "Copyright (c) Meta Platforms, Inc. All Rights Reserved.",
+    "LicenseRef-llama4-community": "Llama 4 is licensed under the Llama 4 Community License, "
+    "Copyright (c) Meta Platforms, Inc. All Rights Reserved.",
+}
 
 
 def meta_doc(path: str, lines: str, license_id: str) -> Provenance:
     return Provenance(
-        "recorded",
+        "spec_example",
         f"https://github.com/meta-llama/llama-models/blob/{META_SHA}/models/{path}#{lines}",
         META_SHA,
         license_id,
         GENERATOR,
-        attribution="Copyright (c) Meta Platforms, Inc. and affiliates. Short example quoted with attribution.",
+        attribution=f"{LLAMA_NOTICE[license_id]} Short example quoted with attribution (THIRD_PARTY_NOTICES.md).",
     )
 
 
@@ -551,8 +559,9 @@ def build_recorded(l33: Loaded, l4: Loaded) -> list[dict[str, Any]]:
                 "reason": "The pythonic call list is cut before its final string, call and list close.",
                 "accept": ["no_tool_calls", "content_passthrough", "exception"],
             },
-            tags=["truncated", "malformed", "x-llama-pythonic"],
-            notes="Token prefix of llama/l4-meta-pythonic-parallel without its last token (which carries the closing "
+            tags=["truncated", "malformed", "x-llama-pythonic", "x-derived-truncation"],
+            notes="Derived, not quoted: the token prefix of llama/l4-meta-pythonic-parallel (a spec_example) without "
+            "its last token (which carries the closing "
             "quote, parenthesis and bracket): the 'missing bracket' failure mode reported in "
             "https://github.com/vllm-project/vllm/issues/30722.",
         ).to_dict()
@@ -620,6 +629,7 @@ def family_json(lds: dict[str, Loaded]) -> dict[str, Any]:
                 "stop_tokens": [ld.tok.convert_ids_to_tokens(i) for i in ld.stop_ids],
                 "gated": True,
                 "tokenizer_mode": "hf",
+                "mirror": {"repo": ld.model.mirror, "revision": ld.model.mirror_revision},
             }
         )
     return {

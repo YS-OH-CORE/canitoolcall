@@ -674,8 +674,9 @@ def build_missing_close_arg(g47: Loaded, renders: dict[str, Rendered]) -> dict[s
         generation_prompt=r.generation_prompt,
         thinking=False,
         expected=expected_from(case.msg),
-        tags=["single-call", "malformed", "regression", "x-glm47", "x-missing-close-arg"],
-        notes="Derived from glm/glm47-thinking-disabled by deleting the last </arg_value> token, the malformation "
+        tags=["single-call", "malformed", "regression", "x-glm47", "x-missing-close-arg", "x-derived"],
+        notes="raw_output is NOT quoted from the issue (it gives no GLM string): it is derived from "
+        "glm/glm47-thinking-disabled by deleting the last </arg_value> token, the malformation "
         "#57826 describes. </tool_call> still closes the call, so the trailing value is recoverable; the issue (and "
         "the qwen3 fix it mirrors, vLLM #57707) expects the parser to keep it.",
     ).to_dict()

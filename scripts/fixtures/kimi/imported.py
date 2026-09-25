@@ -227,11 +227,14 @@ ITEMS: list[Item] = [
         + " After tools.",
         [stand_in("get_weather", {"city": "string"})],
         vllm(K2T, "L435-L458"),
-        ["single-call", "text-before-call", "text-after-call"],
+        ["single-call", "text-before-call", "text-after-call", "x-policy"],
         expected=exp("Before.  After tools.", ("get_weather", {"city": "Tokyo"})),
         notes=STANDIN + " The deltas of the streaming test, concatenated. vLLM's test asserts the trailing text is "
         "DROPPED; this fixture expects it kept, because text outside the tool-calls section is ordinary content and "
-        "dropping it loses model output. Content is the text before and after the section, concatenated verbatim.",
+        "dropping it loses model output. Content is the text before and after the section, concatenated verbatim "
+        "(spec/README.md, 'Content around tool calls'). Tagged x-policy: the expected value encodes that spec rule, "
+        "which neither the Kimi format nor the cited test fixes, so the matrix can show it apart from format "
+        "conformance.",
     ),
     Item(
         "vllm-no-call-thinking-disabled",

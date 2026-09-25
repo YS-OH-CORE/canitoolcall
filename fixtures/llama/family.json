@@ -30,7 +30,11 @@
         "<|eot_id|>"
       ],
       "gated": true,
-      "tokenizer_mode": "hf"
+      "tokenizer_mode": "hf",
+      "mirror": {
+        "repo": "unsloth/Llama-3.3-70B-Instruct",
+        "revision": "99cd0d2c829e92a67c844f9144c2509632e5c87f"
+      }
     },
     {
       "repo": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
@@ -43,7 +47,11 @@
         "<|eot|>"
       ],
       "gated": true,
-      "tokenizer_mode": "hf"
+      "tokenizer_mode": "hf",
+      "mirror": {
+        "repo": "unsloth/Llama-4-Scout-17B-16E-Instruct",
+        "revision": "afd8e498c87bda51c7ea8ec68ea2f7c066e6340b"
+      }
     }
   ],
   "format_notes": "docs/formats/llama.md",

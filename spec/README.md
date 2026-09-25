@@ -41,7 +41,7 @@ The family slug is the directory name, the `family` field, and the prefix of eve
 | `expected_error` | one of | `{reason, accept: [no_tool_calls \| content_passthrough \| exception]}` for truncated or malformed output |
 | `tags` | yes | edge-case tags (enum in the schema, or custom `x-*`) |
 | `output_token_ids` | recommended | token ids of `raw_output` under `tokenizer` |
-| `tokenizer` | with ids | `{repo, revision, mode: hf\|mistral}` |
+| `tokenizer` | with ids | `{repo, revision, mode: hf\|mistral}`. `repo`@`revision` must be `models[0]` at its pinned revision in `family.json`, or that reference model's declared `mirror` (for gated repos). Revisions are full 40-hex commit shas, never branch names: adapters load tokenizers from this pin, and only a short reviewed allowlist of pins may run repository code (`trust_remote_code`) |
 | `generation_prompt` | optional | the text `add_generation_prompt` appends, when it matters (e.g. it pre-fills `<think>\n`) |
 | `thinking` | optional | whether thinking was enabled in the request; `null` means the template default |
 | `notes` | optional | free text |
@@ -59,11 +59,13 @@ The family slug is the directory name, the `family` field, and the prefix of eve
 `template_render` fixtures must name the `generator` script in `scripts/fixtures/` that reproduces them, and should record `template_sha256`.
 
 **History rendering is not generation.** A chat template serializes a *past* assistant turn. That can differ from what the model generates, and engines parse *generations*. Known cases (see `docs/formats/`):
-- Mistral v11 templates add `[CALL_ID]` that the model never generates.
-- gpt-oss templates put the recipient in the role header (`<|start|>assistant to=functions.X<|channel|>commentary`), while generations put it after the channel.
+- Mistral v11 history renders add `[CALL_ID]<id>` when the call has an id. mistral-common's generation grammar has no `[CALL_ID]`, but that grammar only constrains guided decoding, and llama.cpp's own Mistral-Small-3.2 tests assume the model emits it. Which form the model generates freely is **unverified**, so both shapes are covered (engine tests for `[CALL_ID]`, id-less renders otherwise; see `docs/formats/mistral.md`).
+- gpt-oss templates put the recipient in the role header (`<|start|>assistant to=functions.X<|channel|>commentary`), while generations put it after the channel. The Harmony spec allows both (`docs/format.md`: "The recipient might be defined in the role or channel section of the header"). Role-header fixtures are tagged `x-recipient-in-role`, channel-form ones `x-recipient-in-channel`, so the matrix and triage can count one gap once rather than once per fixture.
 - The generation stop token is cut: `<|call|>` for Harmony, `<|im_end|>` for Qwen, `<tool_call|>`/`<|tool_response>` for Gemma 4.
 
 When the two differ, prefer `engine_test` or `recorded` sources, and say so in `notes`.
+
+**Derived fixtures are tagged.** A fixture whose `raw_output` is not quoted verbatim from its `source_url` (for example a `bug_report` fixture built by applying the reported malformation to a template render, or a token-prefix truncation of a `spec_example`) carries `x-derived` or `x-derived-truncation`, and its `notes` say how it was made.
 
 ### Token ids come first
 
@@ -72,15 +74,16 @@ Re-encoding text is lossy for some tokenizers (`mistral_common` never maps the t
 ## Expected results
 
 - `content` and `reasoning_content` are strings or `null`. `null` means absent; `""` is treated as `null`.
+- **Content around tool calls** is ordinary content: the text before and after a call (or a tool-calls section) is concatenated verbatim, in order, with nothing inserted or removed between the segments. Fixtures whose expected value depends on this rule rather than on the format itself are tagged `x-policy`.
 - `tool_calls` are listed in emission order. `arguments` is a JSON **object** and is compared after parsing, so key order and whitespace do not matter, but value types do (`3` ≠ `"3"`).
 - Use `expected_error` for outputs that are truncated or malformed. The parser passes if it does one of the `accept` outcomes:
   - `no_tool_calls`: no exception, no calls
   - `content_passthrough`: no calls, and the text comes back as content
   - `exception`: the engine's parser raised
 
-  Fixtures made by cutting a template render short (a token prefix, which is what `max_tokens` produces) accept all three outcomes. A fixture copied from an engine test or a bug report may accept fewer when its source says which outcome is correct, and its `notes` say why.
+  Fixtures made by cutting a template render short (a token prefix, which is what `max_tokens` produces) accept all three outcomes. They carry the `truncated` tag, which means the generation ended at `max_tokens`: the model never emitted a stop token, so adapters must replay the finish as `finish_reason: "length"` and never append a stop token. A fixture copied from an engine test or a bug report may accept fewer when its source says which outcome is correct, and its `notes` say why.
 
-  Returning a tool call for output that was cut off is deliberately **not** an accepted outcome (there is no `partial_call`). The model never finished that call. Its arguments are either invalid JSON, which crashes clients that parse them, or they were silently completed by the parser, and the client would then run a call the model never made. Some OpenAI-compatible servers return such a call together with `finish_reason: "length"`. A client that checks `finish_reason` can cope with that, but because it is unsafe by default, these fixtures judge it `fail`. The matrix shows these results under the `expected_error` check, so they can be told apart from mis-parses of complete output. When two parallel calls are cut in the second one, fixtures expect the first, complete call to be kept.
+  Returning a tool call for output that was cut off is deliberately **not** an accepted outcome (there is no `partial_call`). The model never finished that call. Its arguments are either invalid JSON, which crashes clients that parse them, or they were silently completed by the parser, and the client would then run a call the model never made. This includes a (partial) call that a streaming parse returned before it raised: the client had already received it. Some OpenAI-compatible servers return such a call together with `finish_reason: "length"`. A client that checks `finish_reason` can cope with that, but because it is unsafe by default, these fixtures judge it `fail`. The matrix shows these results under the `expected_error` check, so they can be told apart from mis-parses of complete output. When two parallel calls are cut in the second one, fixtures expect the first, complete call to be kept.
 
 ## Checks
 
@@ -102,12 +105,12 @@ A case's status is the worst over its checks: `fail` > `error` > `soft_pass` > `
 Check details (policy of `canitoolcall.checks`):
 
 - **Rows.** Each check emits one row per parse it applies to (`nonstream` or a strategy id). `split_invariance` emits a single row with strategy `*`, comparing every realistic stream with the `one` stream. `arguments_json` and `arguments_schema` emit rows only for parses that returned tool calls. `parallel_order` applies only when `expected` has two or more calls.
-- **Arguments** are compared as parsed JSON: key order and whitespace don't matter, and value types do (`3` ≠ `"3"`, `true` ≠ `1`). `1` and `1.0` are the same JSON number. Text that is not strict JSON never equals a valid parse. That includes `""` for a no-argument call, a double-encoded string, and `NaN`/`Infinity`.
+- **Arguments** are compared as parsed JSON: key order and whitespace don't matter, and value types do (`3` ≠ `"3"`, `true` ≠ `1`). `1` and `1.0` are the same JSON number. Text that is not strict JSON never equals a valid parse. That includes `""` for a no-argument call, a double-encoded string, `NaN`/`Infinity`, an object with a duplicate key (clients may keep either value), and a missing (`null`) `arguments_raw`.
 - **Exceptions.** Two parses that raised are equal when the exception *type* matches; messages may differ.
 - **`expected_error`.** A result is `content_passthrough` when its content equals `raw_output`. Equality after stripping surrounding whitespace also counts, but that alone gives `soft_pass`.
 - **`no_leakage`** also scans tool names and JSON object keys. For `expected_error` fixtures, markers in `content` are allowed, since passing the raw text through is a graceful outcome.
 - **`arguments_schema`.** A call whose arguments equal the expected arguments passes even if they violate the schema: the model emitted them, and the engine returned them faithfully. An invalid tool schema is a fixture problem and gives `error`.
-- **Synthetic streams** (`char:<seed>`) get rows like any other stream, but those rows never count toward the case status.
+- **Synthetic streams** get rows like any other stream, but those rows never count toward the case status, and `split_invariance` leaves them out. `char:<seed>` is always synthetic. Multi-token strategies (`one`, `special`, `rand:<seed>:<max>` with `max` > 1) are synthetic for engines whose server emits one event per generated token (llama-server, Ollama, transformers `serve`; the adapter's `tokens_per_step = "one"`), because no user of those engines can receive such a delta. The results file lists them in `run.synthetic_strategies`.
 - **Skipped strategies.** When the worker cannot run a requested strategy for a case, the case lists it in `skipped_strategies` with the reason. Examples: `special` when the adapter doesn't expose special token ids, and `char:*` when the adapter has no text-delta path.
 
 ## Chunking strategies
@@ -121,6 +124,8 @@ Streams are built from groups of **token ids**, never from characters, because e
 | `token` | one token per delta |
 | `rand:<seed>:<max>` | seeded random groups of 1..`max` tokens (Python `random.Random(seed)`) |
 | `char:<seed>` | synthetic per-character stress (can split special tokens). Opt-in only and reported separately, because it is not realistic |
+
+Which strategies count depends on the engine: see "Synthetic streams" above.
 
 The default set is `one`, `special`, `token`, and `rand:1:8` … `rand:5:8`. The same seed always gives the same grouping, on every machine.
 

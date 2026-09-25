@@ -9,10 +9,14 @@ For each case we encode ``[user, assistant]`` (finetuning validation mode, which
 assistant turn) and ``[user]`` (test mode), check that the prompt ids are a prefix, slice them off
 and cut at ``</s>``. ``raw_output`` is the slice decoded with special tokens kept.
 
-Tool calls are rendered WITHOUT call ids. In v11 a call id would add ``[CALL_ID]id`` to the history
-render, but mistral-common's generation grammar (``guidance/grammar_factory.py``
-``_TOOL_CALL_GRAMMAR = "[TOOL_CALLS] SAFE_WS? name [ARGS] SAFE_WS? %json …"``) has no call id: the
-model does not generate it. ``[CALL_ID]`` fixtures come from engine tests (import_mistral.py).
+Tool calls are rendered WITHOUT call ids (``id="null"``), and for v3/v11 mistral-common's request
+validation is skipped (the official ``encode_chat_completion`` rejects parallel calls without ids).
+In v11 a call id would add ``[CALL_ID]id`` to the history render. mistral-common's generation
+grammar (``guidance/grammar_factory.py`` ``_TOOL_CALL_GRAMMAR = "[TOOL_CALLS] SAFE_WS? name [ARGS]
+SAFE_WS? %json …"``) has no call id, but that grammar only constrains guided decoding, and
+llama.cpp's own Mistral-Small-3.2 tests assume the model emits ``[CALL_ID]``. Which form the model
+generates freely is unverified until a recorded generation settles it, so both are covered:
+``[CALL_ID]`` fixtures come from engine tests (import_mistral.py); see docs/formats/mistral.md.
 In v3 the id would add an ``"id"`` key inside the JSON array, which the v3 engine tests also omit.
 
 A case lists extra models (``also``) that share the format; each is added to ``models`` only if
@@ -373,6 +377,18 @@ def main() -> None:
             ids = truncate(v.ref, ids, c.truncate_after)
             exp, err = c.truncate_expected, c.truncate_error
         version = mistral_tokenizer(v.ref).instruct_tokenizer.tokenizer.version.value
+        workaround = None
+        if c.calls and version in ("v3", "v11"):
+            workaround = (
+                "Call ids were suppressed (id='null') and mistral-common's request validation was skipped, "
+                "because the official encode_chat_completion rejects calls without ids"
+                + (
+                    "; with ids, v11 renders [CALL_ID]<id> after the name. Whether the model generates [CALL_ID] "
+                    "is unverified (docs/formats/mistral.md covers both shapes)."
+                    if version == "v11"
+                    else "."
+                )
+            )
         recs.append(
             record(
                 name=c.name,
@@ -399,6 +415,7 @@ def main() -> None:
                     for p in (
                         f"Rendered with mistral-common {MC_VERSION} from {v.ref.repo} (tokenizer {version}); "
                         "template_sha256 is the sha256 of the tokenizer file that defines the format.",
+                        workaround,
                         c.notes,
                     )
                     if p

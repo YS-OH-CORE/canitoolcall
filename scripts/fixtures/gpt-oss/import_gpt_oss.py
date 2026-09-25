@@ -192,7 +192,13 @@ def build(enc: Any) -> list[dict[str, Any]]:
             '<|message|>{"location": "SF"}<|end|>',
             tools=[T_WEATHER_LOC],
             expected=expected("Let me check the weather.", None, [("get_weather", {"location": "SF"})]),
-            tags=["single-call", "text-before-call", "x-preamble-commentary", "x-no-content-type"],
+            tags=[
+                "single-call",
+                "text-before-call",
+                "x-preamble-commentary",
+                "x-no-content-type",
+                "x-recipient-in-role",
+            ],
             notes="test_commentary_with_recipient_excluded. The call message is closed by <|end|> instead of the "
             "<|call|> stop token.",
         ),
