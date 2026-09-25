@@ -54,6 +54,7 @@ The family slug is the directory name, the `family` field, and the prefix of eve
 | `engine_test` | You copied a raw output from an engine's test suite | the test file at a commit, with line anchor | vLLM/SGLang/transformers Apache-2.0, llama.cpp/Ollama MIT |
 | `bug_report` | The output reproduces a public issue | the issue or PR (comment) URL | `NOASSERTION` plus a short quote |
 | `recorded` | A real generation captured from the model | the recording log or dataset | as stated |
+| `spec_example` | An example quoted verbatim from the format's official specification (e.g. openai/harmony `docs/format.md`) | the spec document at a commit, with line anchor | the spec's license |
 
 `template_render` fixtures must name the `generator` script in `scripts/fixtures/` that reproduces them, and should record `template_sha256`.
 
@@ -77,6 +78,10 @@ Re-encoding text is lossy for some tokenizers (`mistral_common` never maps the t
   - `content_passthrough`: no calls, and the text comes back as content
   - `exception`: the engine's parser raised
 
+  Fixtures made by cutting a template render short (a token prefix, which is what `max_tokens` produces) accept all three outcomes. A fixture copied from an engine test or a bug report may accept fewer when its source says which outcome is correct, and its `notes` say why.
+
+  Returning a tool call for output that was cut off is deliberately **not** an accepted outcome (there is no `partial_call`). The model never finished that call. Its arguments are either invalid JSON, which crashes clients that parse them, or they were silently completed by the parser, and the client would then run a call the model never made. Some OpenAI-compatible servers return such a call together with `finish_reason: "length"`. A client that checks `finish_reason` can cope with that, but because it is unsafe by default, these fixtures judge it `fail`. The matrix shows these results under the `expected_error` check, so they can be told apart from mis-parses of complete output. When two parallel calls are cut in the second one, fixtures expect the first, complete call to be kept.
+
 ## Checks
 
 For each fixture and engine, the runner produces one non-streaming parse and one streaming parse per chunking strategy. Then it applies these checks:
@@ -92,7 +97,18 @@ For each fixture and engine, the runner produces one non-streaming parse and one
 | `arguments_schema` | every call's arguments validate against the tool's `parameters` schema, and the name is one of the offered tools |
 | `parallel_order` | the number of calls and their order of names match `expected` |
 
-A case's status is the worst over its checks: `fail` > `error` > `soft_pass` > `pass`. It is `unsupported` when the adapter has no parser configuration for the family or model. `error` is reserved for **harness** problems; an exception raised by the engine's own parser is a parse outcome and is judged by the checks.
+A case's status is the worst over its checks: `fail` > `error` > `soft_pass` > `pass`. It is `unsupported` when the adapter has no parser configuration for the family or model, and the case then records the adapter's `reason`. `error` is reserved for **harness** problems; an exception raised by the engine's own parser is a parse outcome and is judged by the checks.
+
+Check details (policy of `canitoolcall.checks`):
+
+- **Rows.** Each check emits one row per parse it applies to (`nonstream` or a strategy id). `split_invariance` emits a single row with strategy `*`, comparing every realistic stream with the `one` stream. `arguments_json` and `arguments_schema` emit rows only for parses that returned tool calls. `parallel_order` applies only when `expected` has two or more calls.
+- **Arguments** are compared as parsed JSON: key order and whitespace don't matter, and value types do (`3` ≠ `"3"`, `true` ≠ `1`). `1` and `1.0` are the same JSON number. Text that is not strict JSON never equals a valid parse. That includes `""` for a no-argument call, a double-encoded string, and `NaN`/`Infinity`.
+- **Exceptions.** Two parses that raised are equal when the exception *type* matches; messages may differ.
+- **`expected_error`.** A result is `content_passthrough` when its content equals `raw_output`. Equality after stripping surrounding whitespace also counts, but that alone gives `soft_pass`.
+- **`no_leakage`** also scans tool names and JSON object keys. For `expected_error` fixtures, markers in `content` are allowed, since passing the raw text through is a graceful outcome.
+- **`arguments_schema`.** A call whose arguments equal the expected arguments passes even if they violate the schema: the model emitted them, and the engine returned them faithfully. An invalid tool schema is a fixture problem and gives `error`.
+- **Synthetic streams** (`char:<seed>`) get rows like any other stream, but those rows never count toward the case status.
+- **Skipped strategies.** When the worker cannot run a requested strategy for a case, the case lists it in `skipped_strategies` with the reason. Examples: `special` when the adapter doesn't expose special token ids, and `char:*` when the adapter has no text-delta path.
 
 ## Chunking strategies
 
@@ -101,11 +117,12 @@ Streams are built from groups of **token ids**, never from characters, because e
 | id | Meaning |
 |---|---|
 | `one` | the whole output in one delta |
+| `special` | split at special-token boundaries: every special token is its own delta, and each run of ordinary tokens between them is one delta. The adapter supplies the engine tokenizer's special ids |
 | `token` | one token per delta |
 | `rand:<seed>:<max>` | seeded random groups of 1..`max` tokens (Python `random.Random(seed)`) |
 | `char:<seed>` | synthetic per-character stress (can split special tokens). Opt-in only and reported separately, because it is not realistic |
 
-The default set is `one`, `token`, and `rand:1:8` … `rand:5:8`. The same seed always gives the same grouping, on every machine.
+The default set is `one`, `special`, `token`, and `rand:1:8` … `rand:5:8`. The same seed always gives the same grouping, on every machine.
 
 ## Normalization policy `soft-v1`
 

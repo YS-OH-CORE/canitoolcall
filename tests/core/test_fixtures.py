@@ -77,6 +77,10 @@ def _copy_family(tmp_path: Path, sample_fixtures_dir: Path, mutate) -> Path:  # 
         (lambda r: r.update(expected_error={"reason": "x", "accept": ["exception"]}), "expected"),
         (lambda r: r.update(tags=["not-a-tag"]), "tags"),
         (lambda r: r["provenance"].update(source_url="file:///etc/passwd"), "source_url"),
+        (lambda r: r["tools"][0]["function"].update(parameters={"type": "no-such-type"}), "not a valid JSON Schema"),
+        (lambda r: r.update(models=["Qwen/Qwen3-8B"]), "is not a reference_model"),
+        (lambda r: r.update(raw_output=r["raw_output"] + "<|im_end|>"), "before the stop token"),
+        (lambda r: r.update(spec_version="1.0"), "spec_version"),
     ],
 )
 def test_validate_rejects(tmp_path: Path, sample_fixtures_dir: Path, mutate, needle: str) -> None:  # type: ignore[no-untyped-def]
@@ -96,3 +100,36 @@ def test_validate_missing_family(tmp_path: Path, sample_fixtures_dir: Path) -> N
     root = _copy_family(tmp_path, sample_fixtures_dir, lambda r: None)
     (root / "qwen3-hermes" / "family.json").unlink()
     assert any("missing family.json" in str(i) for i in validate([root]))
+
+
+def test_validate_broken_family_json(tmp_path: Path, sample_fixtures_dir: Path) -> None:
+    root = _copy_family(tmp_path, sample_fixtures_dir, lambda r: None)
+    (root / "qwen3-hermes" / "family.json").write_text("{not json", encoding="utf-8")
+    assert any("invalid JSON" in str(i) for i in validate([root]))
+
+
+def test_validate_family_schema_errors(tmp_path: Path, sample_fixtures_dir: Path) -> None:
+    root = _copy_family(tmp_path, sample_fixtures_dir, lambda r: None)
+    fam_path = root / "qwen3-hermes" / "family.json"
+    fam = json.loads(fam_path.read_text(encoding="utf-8"))
+    del fam["markers"]
+    fam_path.write_text(json.dumps(fam), encoding="utf-8")
+    issues = [str(i) for i in validate([root])]
+    assert any("markers" in i for i in issues), issues
+
+
+def test_validate_invalid_jsonl(tmp_path: Path, sample_fixtures_dir: Path) -> None:
+    root = _copy_family(tmp_path, sample_fixtures_dir, lambda r: None)
+    (root / "qwen3-hermes" / "bad.jsonl").write_text("{oops\n", encoding="utf-8")
+    assert any("invalid JSON" in str(i) for i in validate([root]))
+
+
+def test_load_reports_malformed_records(tmp_path: Path) -> None:
+    d = tmp_path / "fam"
+    d.mkdir()
+    (d / "x.jsonl").write_text('{"id": "fam/x"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"x\.jsonl:1: malformed fixture"):
+        load_fixtures([tmp_path])
+    (d / "x.jsonl").write_text("{oops\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"x\.jsonl:1: invalid JSON"):
+        load_fixtures([tmp_path])

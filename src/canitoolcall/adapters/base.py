@@ -30,7 +30,7 @@ breaking without it — see docs/DESIGN.md "Faithfulness requirements"):
 from __future__ import annotations
 
 import abc
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -58,6 +58,12 @@ class ReplayInput:
     thinking: bool | None = None
     stop_tokens: tuple[str, ...] = ()
     tokenizer_mode: str = "hf"
+    revision: str | None = None
+    """Pinned revision of the reference model (``family.reference_models[].revision``).
+
+    Adapters use it to load the tokenizer/template when the fixture has no
+    ``tokenizer`` pin. ``None`` when the family is unknown.
+    """
 
     @classmethod
     def from_fixture(cls, fixture: Fixture, family: Family | None = None) -> ReplayInput:
@@ -77,6 +83,7 @@ class ReplayInput:
             thinking=fixture.thinking,
             stop_tokens=ref.stop_tokens if ref else (),
             tokenizer_mode=(fixture.tokenizer.mode if fixture.tokenizer else (ref.tokenizer_mode if ref else "hf")),
+            revision=ref.revision if ref else None,
         )
 
 
@@ -100,6 +107,9 @@ class Adapter(abc.ABC):
 
     name: ClassVar[str]
     """Engine name: ``vllm``, ``sglang``, ``llamacpp``, ``ollama``, ``transformers``."""
+
+    supports_text_deltas: ClassVar[bool] = False
+    """True if :meth:`parse_stream_text` is implemented (enables ``char:<seed>``)."""
 
     pinned_version: ClassVar[str]
     """The engine version (or commit) this adapter is written and tested against."""
@@ -147,6 +157,26 @@ class Adapter(abc.ABC):
         finishing step. Deltas are accumulated OpenAI-client style (see
         :class:`~canitoolcall.results.ParseResult`).
         """
+
+    def special_token_ids(self, raw: ReplayInput) -> Collection[int] | None:
+        """Ids the engine's tokenizer treats as special/control tokens.
+
+        Optional. Enables the ``special`` chunking strategy (split at
+        special-token boundaries). For HF tokenizers this is typically
+        ``tokenizer.all_special_ids`` plus added tokens with ``special=True``.
+        Return ``None`` (the default) when unknown; the worker then reports
+        the strategy as skipped instead of guessing.
+        """
+        return None
+
+    def parse_stream_text(self, raw: ReplayInput, deltas: Sequence[str], tools: Sequence[ToolSpec]) -> ParseResult:
+        """Optional synthetic stress path: stream raw TEXT deltas (``char:<seed>``).
+
+        Only called when :attr:`supports_text_deltas` is True. Results from this
+        path never count toward a case's status (it can split special tokens,
+        which no real server does).
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no text-delta streaming path")
 
     def close(self) -> None:  # noqa: B027 - optional hook
         """Release subprocesses/resources. Called once by the worker at shutdown."""

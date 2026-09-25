@@ -47,7 +47,14 @@ def _run() -> RunResults:
             parser_config={"tool_parser": "hermes"},
             observed=obs,
         ),
-        CaseResult("other/c", "other", Status.UNSUPPORTED),
+        CaseResult("other/c", "other", Status.UNSUPPORTED, reason="no parser for this model"),
+        CaseResult(
+            "fam/d",
+            "fam",
+            Status.ERROR,
+            harness_error="Traceback ...",
+            skipped_strategies={"special": "adapter does not expose the engine's special token ids"},
+        ),
     )
     return RunResults(
         canitoolcall_version="0.1.0.dev0",
@@ -67,7 +74,7 @@ def _run() -> RunResults:
 
 def test_summary_counts() -> None:
     s = _run().summary()
-    assert s["totals"] == {"pass": 1, "soft_pass": 0, "fail": 1, "error": 0, "unsupported": 1}
+    assert s["totals"] == {"pass": 1, "soft_pass": 0, "fail": 1, "error": 1, "unsupported": 1}
     assert s["by_family"]["other"]["unsupported"] == 1
 
 
@@ -85,3 +92,36 @@ def test_results_match_schema(tmp_path: Path) -> None:
 
     schema = json.loads((spec_dir() / "results.schema.json").read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(schema).validate(_run().to_dict())
+
+
+def test_optional_case_fields_are_omitted_when_unset() -> None:
+    d = CaseResult("fam/a", "fam", Status.PASS).to_dict()
+    assert set(d) == {"fixture_id", "family", "status", "checks"}
+    d = _run().to_dict()["cases"][2]
+    assert d["reason"] == "no parser for this model"
+
+
+def test_default_filename_is_filesystem_safe() -> None:
+    run = _run()
+    odd = RunResults(run.canitoolcall_version, EngineInfo("llamacpp", "b1234/a25c9865 dirty"), run.run, ())
+    assert odd.default_filename() == "llamacpp-b1234_a25c9865_dirty.json"
+
+
+def test_write_is_atomic_and_overwrites(tmp_path: Path) -> None:
+    run = _run()
+    path = tmp_path / "deep" / "out.json"
+    run.write(path)
+    run.write(path)
+    assert [p.name for p in path.parent.iterdir()] == ["out.json"]
+    assert RunResults.load(path) == run
+
+
+def test_load_rejects_unknown_major(tmp_path: Path) -> None:
+    import pytest
+
+    d = _run().to_dict()
+    d["schema_version"] = "9.0"
+    path = tmp_path / "x.json"
+    path.write_text(json.dumps(d), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version"):
+        RunResults.load(path)

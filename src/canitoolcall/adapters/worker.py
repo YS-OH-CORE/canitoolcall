@@ -9,13 +9,14 @@ logging. Protocol (version 1):
 
 ``{"op": "hello"}``
     -> ``{"ok": true, "protocol": 1, "engine": str, "version": str,
-    "commit": str|null, "details": {...}}``
+    "pinned_version": str, "commit": str|null, "python": str, "details": {...}}``
 
 ``{"op": "replay", "fixture": <fixture record>, "family": <family.json>|null,
-"strategies": ["one", "token", "rand:1:8", ...]}``
+"strategies": ["one", "special", "token", "rand:1:8", ...]}``
     -> ``{"ok": true, "fixture_id": str, "supported": bool, "reason": str|null,
-    "parser_config": {...}, "nonstream": <ParseResult>, "streams": {id: <ParseResult>}}``
-    (``nonstream``/``streams``/``parser_config`` omitted when unsupported)
+    "parser_config": {...}, "nonstream": <ParseResult>, "streams": {id: <ParseResult>},
+    "skipped": {id: reason}}``
+    (``nonstream``/``streams``/``parser_config``/``skipped`` omitted when unsupported)
 
 ``{"op": "shutdown"}``
     -> ``{"ok": true}`` then exit 0.
@@ -27,14 +28,16 @@ worker keeps serving. Standard library only.
 from __future__ import annotations
 
 import json
+import os
+import platform
 import sys
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import IO, Any
 
 from canitoolcall.adapters import load_adapter
 from canitoolcall.adapters.base import Adapter, ReplayInput
-from canitoolcall.chunking import ChunkStrategy, split
+from canitoolcall.chunking import ChunkStrategy, split, split_text
 from canitoolcall.fixtures import Family, Fixture
 
 PROTOCOL_VERSION = 1
@@ -46,7 +49,9 @@ def hello(adapter: Adapter) -> dict[str, Any]:
         "protocol": PROTOCOL_VERSION,
         "engine": adapter.name,
         "version": adapter.version(),
+        "pinned_version": adapter.pinned_version,
         "commit": adapter.commit(),
+        "python": platform.python_version(),
         "details": adapter.engine_details(),
     }
 
@@ -59,9 +64,14 @@ def replay(
 ) -> dict[str, Any]:
     """Replay one fixture: one non-streaming parse plus one stream per strategy.
 
-    Synthetic ``char`` strategies are skipped here: adapters work on token
-    ids, and the generic worker never fabricates ids for character splits.
-    (An adapter-specific stress path may be added later; see docs/DESIGN.md.)
+    * ``one``/``token``/``rand``: groups of :meth:`Adapter.units`.
+    * ``special``: needs :meth:`Adapter.special_token_ids`; skipped (with a
+      reason) when the adapter cannot say which ids are special.
+    * ``char``: synthetic text deltas, only through
+      :meth:`Adapter.parse_stream_text`; skipped otherwise. The generic worker
+      never fabricates token ids for character splits.
+
+    Skipped strategies are listed in ``skipped`` so the gap is visible in results.
     """
     raw = ReplayInput.from_fixture(fixture, family)
     sup = adapter.supports(raw.family, raw.model)
@@ -69,19 +79,40 @@ def replay(
         return {"ok": True, "fixture_id": fixture.id, "supported": False, "reason": sup.reason}
     tools = list(fixture.tools)
     units = adapter.units(raw)
+    special: Collection[int] | None = None
+    special_known = False
     streams: dict[str, Any] = {}
+    skipped: dict[str, str] = {}
     for strat in strategies:
-        if not strat.realistic:
+        if strat.id in streams or strat.id in skipped:
             continue
-        streams[strat.id] = adapter.parse_stream(raw, split(units, strat), tools).to_dict()
+        if strat.kind == "char":
+            if not adapter.supports_text_deltas:
+                skipped[strat.id] = "synthetic character split: adapter has no text-delta streaming path"
+                continue
+            result = adapter.parse_stream_text(raw, split_text(raw.text, strat), tools)
+        elif strat.kind == "special":
+            if not special_known:
+                special, special_known = adapter.special_token_ids(raw), True
+            if special is None:
+                skipped[strat.id] = "adapter does not expose the engine's special token ids"
+                continue
+            result = adapter.parse_stream(raw, split(units, strat, special=frozenset(special)), tools)
+        else:
+            result = adapter.parse_stream(raw, split(units, strat), tools)
+        streams[strat.id] = result.to_dict()
+    nonstream = adapter.parse(raw, tools).to_dict()
+    # parser_config comes last: some engines (llama.cpp) only know their full
+    # parser configuration after a parse with this fixture's tools.
     return {
         "ok": True,
         "fixture_id": fixture.id,
         "supported": True,
         "reason": None,
         "parser_config": adapter.parser_config(raw),
-        "nonstream": adapter.parse(raw, tools).to_dict(),
+        "nonstream": nonstream,
         "streams": streams,
+        "skipped": skipped,
     }
 
 
@@ -137,14 +168,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(args) != 1:
         print("usage: python -m canitoolcall.adapters.worker <engine>", file=sys.stderr)
         return 2
-    # Keep stdout clean for the protocol: engines sometimes print on import.
-    proto_out = sys.stdout
+    # Keep the protocol channel clean: engines print on import, and compiled
+    # extensions may write straight to file descriptor 1. Move the protocol to
+    # a private duplicate of fd 1 and point fd 1 (and sys.stdout) at stderr.
+    sys.stdout.flush()
+    saved_fd1 = os.dup(1)
+    proto_out = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n")
+    os.dup2(2, 1)
+    old_stdout = sys.stdout
     sys.stdout = sys.stderr
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
     try:
         adapter = load_adapter(args[0])
         return serve(adapter, sys.stdin, proto_out)
     finally:
-        sys.stdout = proto_out
+        proto_out.close()
+        os.dup2(saved_fd1, 1)
+        os.close(saved_fd1)
+        sys.stdout = old_stdout
 
 
 if __name__ == "__main__":

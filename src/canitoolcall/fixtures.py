@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from canitoolcall import SPEC_VERSION
 
-ProvenanceKind = Literal["template_render", "engine_test", "bug_report", "recorded"]
+ProvenanceKind = Literal["template_render", "engine_test", "bug_report", "recorded", "spec_example"]
 ErrorOutcome = Literal["no_tool_calls", "content_passthrough", "exception"]
 
 FIXTURES_ENV = "CANITOOLCALL_FIXTURES"
@@ -306,6 +306,9 @@ def load_fixtures(
 ) -> list[Fixture]:
     """Load fixtures (no schema validation; run :func:`validate` for that).
 
+    Raises ``ValueError`` (with the file and line) for invalid JSON or a
+    record that lacks required fields.
+
     Args:
         paths: files or directories; defaults to :func:`default_fixtures_dir`.
         families: keep only these family slugs.
@@ -314,7 +317,12 @@ def load_fixtures(
     out: list[Fixture] = []
     for f in iter_fixture_files(paths):
         for n, rec in read_jsonl(f):
-            fx = Fixture.from_dict(rec, source=f, line=n)
+            try:
+                fx = Fixture.from_dict(rec, source=f, line=n)
+            except (KeyError, TypeError, AttributeError) as e:
+                raise ValueError(
+                    f"{f}:{n}: malformed fixture ({type(e).__name__}: {e}); run canitoolcall validate"
+                ) from e
             if families and fx.family not in families:
                 continue
             if tags and not set(tags) & set(fx.tags):
@@ -374,6 +382,9 @@ def validate(paths: Iterable[Path] | None = None) -> list[ValidationIssue]:
       * ``fixtures/<family>/family.json`` exists and is valid
       * ``tokenizer`` is present whenever ``output_token_ids`` is
       * every expected tool call names one of the offered tools
+      * every tool's ``parameters`` is itself a valid JSON Schema
+      * ``models[0]`` is listed in the family's ``reference_models``
+      * ``raw_output`` does not end with one of that model's stop tokens
       * ``spec_version`` major matches this package
 
     Returns a list of issues; empty means valid.
@@ -386,20 +397,28 @@ def validate(paths: Iterable[Path] | None = None) -> list[ValidationIssue]:
     fam_validator = jsonschema.Draft202012Validator(_schema("family.schema.json"))
     issues: list[ValidationIssue] = []
     seen: dict[str, tuple[Path, int]] = {}
-    checked_families: set[Path] = set()
+    families: dict[Path, Family | None] = {}
 
     for f in iter_fixture_files(paths):
         fam_file = f.parent / "family.json"
-        if fam_file not in checked_families:
-            checked_families.add(fam_file)
+        if fam_file not in families:
+            families[fam_file] = None
             if not fam_file.is_file():
                 issues.append(ValidationIssue(fam_file, None, "missing family.json"))
             else:
-                fam = json.loads(fam_file.read_text(encoding="utf-8"))
-                for e in fam_validator.iter_errors(fam):
+                try:
+                    fam = json.loads(fam_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as exc:
+                    issues.append(ValidationIssue(fam_file, None, f"invalid JSON: {exc}"))
+                    fam = None
+                fam_errors = list(fam_validator.iter_errors(fam)) if fam is not None else []
+                for e in fam_errors:
                     issues.append(ValidationIssue(fam_file, None, f"{e.json_path}: {e.message}"))
-                if fam.get("slug") != f.parent.name:
-                    issues.append(ValidationIssue(fam_file, None, "slug must equal the directory name"))
+                if fam is not None and not fam_errors:
+                    families[fam_file] = Family.from_dict(fam)
+                    if fam.get("slug") != f.parent.name:
+                        issues.append(ValidationIssue(fam_file, None, "slug must equal the directory name"))
+        family = families[fam_file]
         try:
             records = list(read_jsonl(f))
         except ValueError as exc:
@@ -429,4 +448,26 @@ def validate(paths: Iterable[Path] | None = None) -> list[ValidationIssue]:
             for tc in (rec.get("expected") or {}).get("tool_calls", []):
                 if tc["name"] not in offered:
                     issues.append(ValidationIssue(f, n, f"expected call {tc['name']!r} is not an offered tool"))
+            for t in rec["tools"]:
+                params = t["function"].get("parameters")
+                if params is None:
+                    continue
+                try:
+                    jsonschema.validators.validator_for(params, default=jsonschema.Draft202012Validator).check_schema(
+                        params
+                    )
+                except jsonschema.SchemaError as exc:
+                    msg = f"tool {t['function']['name']!r}: parameters is not a valid JSON Schema: {exc.message}"
+                    issues.append(ValidationIssue(f, n, msg))
+            if family is not None:
+                ref = family.reference_for(rec["models"][0])
+                if ref is None:
+                    issues.append(
+                        ValidationIssue(f, n, f"models[0] {rec['models'][0]!r} is not a reference_model in family.json")
+                    )
+                else:
+                    for stop in ref.stop_tokens:
+                        if stop and rec["raw_output"].endswith(stop):
+                            msg = f"raw_output must end before the stop token {stop!r}"
+                            issues.append(ValidationIssue(f, n, msg))
     return issues

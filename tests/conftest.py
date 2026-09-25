@@ -18,6 +18,14 @@ from canitoolcall.adapters import PYTHON_ENV, engine_python
 from canitoolcall.fixtures import repo_root
 
 DATA = Path(__file__).parent / "core" / "data"
+CORE_TESTS = Path(__file__).parent / "core"
+REFERENCE_ADAPTER = "reference_adapter:ReferenceAdapter"
+"""Adapter spec of the pure-Python test adapter in tests/core/reference_adapter.py."""
+
+# Core test helpers (reference_adapter, core_corpus) are plain modules next to
+# the tests; --import-mode=importlib does not put their directory on sys.path.
+if str(CORE_TESTS) not in sys.path:
+    sys.path.insert(0, str(CORE_TESTS))
 
 
 def _engine_interpreter(engine: str) -> Path | None:
@@ -53,3 +61,15 @@ def engine_python_for(request: pytest.FixtureRequest) -> Path:
 def sample_fixtures_dir() -> Path:
     """Fixtures root holding the rendered Qwen3 sample (see core/data/make_sample.py)."""
     return DATA / "fixtures"
+
+
+@pytest.fixture
+def reference_env() -> dict[str, str]:
+    """Worker environment that makes the reference test adapter importable."""
+    return {"PYTHONPATH": str(CORE_TESTS)}
+
+
+@pytest.fixture
+def reference_adapter_spec() -> str:
+    """``module:Class`` spec of the reference adapter (importable in-process and in workers)."""
+    return REFERENCE_ADAPTER

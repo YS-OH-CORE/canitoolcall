@@ -37,7 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     r = sub.add_parser("run", help="replay fixtures through an engine's parsers (offline)")
-    r.add_argument("--engine", required=True, choices=sorted(ENGINES))
+    r.add_argument(
+        "--engine",
+        required=True,
+        type=_engine_arg,
+        metavar="ENGINE",
+        help=f"one of {', '.join(sorted(ENGINES))}, or an adapter spec package.module:Class",
+    )
     r.add_argument(
         "--fixtures",
         nargs="*",
@@ -68,6 +74,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="which cases keep the observed parses in the results file",
     )
     r.add_argument("--timeout", type=float, default=120.0, help="per-fixture worker timeout in seconds")
+    r.add_argument("--tag", action="append", default=[], metavar="TAG", help="only fixtures with this tag (repeatable)")
+    r.add_argument(
+        "--id", action="append", default=[], metavar="PATTERN", help="only fixture ids matching this glob (repeatable)"
+    )
+    r.add_argument("--jobs", "-j", type=_positive_int, default=1, help="worker processes to run in parallel")
+    r.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        type=_env_arg,
+        metavar="KEY=VALUE",
+        help="extra environment for the worker, e.g. HF_HUB_OFFLINE=1 (repeatable)",
+    )
+    r.add_argument("--no-validate", action="store_true", help="skip validating the fixtures against the spec")
 
     pr = sub.add_parser("probe", help="check a live OpenAI-compatible endpoint")
     pr.add_argument("--base-url", required=True, help="e.g. http://localhost:8000/v1")
@@ -79,12 +99,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr.add_argument("--no-stream", action="store_true", help="skip the streaming variants")
     pr.add_argument("--timeout", type=float, default=60.0)
-    pr.add_argument("--json", type=Path, default=None, metavar="PATH", help="also write the report as JSON")
+    pr.add_argument("--concurrency", type=_positive_int, default=4, help="parallel requests (default 4)")
+    pr.add_argument(
+        "--json",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="also write the report as JSON ('-' writes JSON to stdout and the table to stderr)",
+    )
 
     m = sub.add_parser("matrix", help="build the static matrix site from results files")
     m.add_argument("--results", type=Path, default=Path("results"))
     m.add_argument("--out", type=Path, default=Path("site/_build"))
     m.add_argument("--templates", type=Path, default=None)
+    m.add_argument(
+        "--fixtures",
+        type=Path,
+        default=None,
+        help="fixture corpus for drill-down pages (default: $CANITOOLCALL_FIXTURES or the repo's fixtures/)",
+    )
 
     v = sub.add_parser("validate", help="validate fixtures against the spec")
     v.add_argument("paths", nargs="*", type=Path, help="fixture files/dirs (default: the fixtures root)")
@@ -93,26 +126,59 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _engine_arg(value: str) -> str:
+    from canitoolcall.adapters import ENGINES, is_adapter_spec
+
+    if value in ENGINES or is_adapter_spec(value):
+        return value
+    raise argparse.ArgumentTypeError(f"unknown engine {value!r} (choose from {', '.join(sorted(ENGINES))})")
+
+
+def _positive_int(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return n
+
+
+def _env_arg(value: str) -> tuple[str, str]:
+    key, sep, val = value.partition("=")
+    if not sep or not key:
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {value!r}")
+    return key, val
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from canitoolcall.chunking import parse_strategies
-    from canitoolcall.runner import RunConfig, run_and_write
+    from canitoolcall.runner import FixtureValidationError, RunConfig, WorkerError, run
 
-    cfg = RunConfig(
-        engine=args.engine,
-        fixtures=tuple(args.fixtures),
-        families=tuple(args.family),
-        strategies=parse_strategies(args.strategy),
-        python=args.python,
-        out_dir=args.out,
-        include_observed=args.observed,
-        timeout_s=args.timeout,
-    )
-    path = run_and_write(cfg)
-    from canitoolcall.results import RunResults
-
-    totals = RunResults.load(path).summary()["totals"]
-    print(f"wrote {path}")
-    print("  ".join(f"{k}={v}" for k, v in totals.items()))
+    try:
+        cfg = RunConfig(
+            engine=args.engine,
+            fixtures=tuple(args.fixtures),
+            families=tuple(args.family),
+            strategies=parse_strategies(args.strategy),
+            python=args.python,
+            out_dir=args.out,
+            include_observed=args.observed,
+            timeout_s=args.timeout,
+            env=dict(args.env),
+            tags=tuple(args.tag),
+            ids=tuple(args.id),
+            jobs=args.jobs,
+            validate=not args.no_validate,
+        )
+        results = run(cfg)
+    except (FixtureValidationError, WorkerError, ValueError, FileNotFoundError) as e:
+        print(f"canitoolcall run: {e}", file=sys.stderr)
+        return EXIT_ERROR
+    path = results.write(cfg.out_dir / results.default_filename())
+    summary = results.summary()
+    totals = summary["totals"]
+    print(f"{results.engine.name} {results.engine.version}: {len(results.cases)} case(s) -> {path}")
+    for fam, counts in summary["by_family"].items():
+        print(f"  {fam:14} " + "  ".join(f"{k}={v}" for k, v in counts.items() if v))
+    print("  total          " + "  ".join(f"{k}={v}" for k, v in totals.items()))
     return EXIT_FAILURES if totals["fail"] or totals["error"] else EXIT_OK
 
 
@@ -127,17 +193,27 @@ def cmd_probe(args: argparse.Namespace) -> int:
         api_key=os.environ.get(args.api_key_env),
         stream_modes=(False,) if args.no_stream else (False, True),
         timeout_s=args.timeout,
+        concurrency=args.concurrency,
     )
-    print(report.render_text())
+    to_stdout = args.json is not None and str(args.json) == "-"
+    print(report.render_text(), file=sys.stderr if to_stdout else sys.stdout)
     if args.json is not None:
-        args.json.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        blob = json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n"
+        if to_stdout:
+            sys.stdout.write(blob)
+        else:
+            args.json.write_text(blob, encoding="utf-8")
     return EXIT_FAILURES if any(o.status in ("fail", "error") for o in report.outcomes) else EXIT_OK
 
 
 def cmd_matrix(args: argparse.Namespace) -> int:
     from canitoolcall.matrix import render_site
 
-    index = render_site(args.results, args.out, args.templates)
+    try:
+        index = render_site(args.results, args.out, args.templates, fixtures_dir=args.fixtures)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"canitoolcall matrix: {e}", file=sys.stderr)
+        return EXIT_ERROR
     print(f"wrote {index}")
     return EXIT_OK
 
@@ -146,6 +222,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     from canitoolcall.fixtures import iter_fixture_files, validate
 
     paths = args.paths or None
+    missing = [p for p in paths or [] if not p.exists()]
+    if missing:
+        print(f"canitoolcall validate: no such path: {', '.join(map(str, missing))}", file=sys.stderr)
+        return EXIT_ERROR
     files = list(iter_fixture_files(paths))
     issues = validate(paths)
     for issue in issues:

@@ -33,12 +33,26 @@ PYTHON_ENV = "CANITOOLCALL_{ENGINE}_PYTHON"
 """Per-engine interpreter override, e.g. ``CANITOOLCALL_VLLM_PYTHON``."""
 
 
+def is_adapter_spec(engine: str) -> bool:
+    """True for an explicit ``package.module:Class`` adapter spec (not a registry name)."""
+    mod, sep, cls = engine.partition(":")
+    return bool(sep and mod and cls.isidentifier() and all(p.isidentifier() for p in mod.split(".")))
+
+
 def adapter_class(engine: str) -> type[Adapter]:
-    """Import and return the adapter class for ``engine`` (does not import the engine)."""
-    try:
+    """Import and return the adapter class for ``engine`` (does not import the engine).
+
+    ``engine`` is a registry name (see :data:`ENGINES`) or an explicit
+    ``package.module:Class`` spec, which lets out-of-tree and test adapters run
+    through the same worker. The module must be importable by the interpreter
+    that loads it.
+    """
+    if engine in ENGINES:
         target = ENGINES[engine]
-    except KeyError:
-        raise ValueError(f"unknown engine {engine!r}; known: {', '.join(ENGINES)}") from None
+    elif is_adapter_spec(engine):
+        target = engine
+    else:
+        raise ValueError(f"unknown engine {engine!r}; known: {', '.join(ENGINES)} (or pass package.module:Class)")
     mod_name, cls_name = target.split(":")
     cls = getattr(importlib.import_module(mod_name), cls_name)
     if not (isinstance(cls, type) and issubclass(cls, Adapter)):
@@ -58,6 +72,8 @@ def engine_python(engine: str, repo_root: Path | None = None) -> Path:
     ``<repo>/.venvs/<engine>/bin/python`` (built by ``scripts/engines/<engine>.sh``),
     then the current interpreter.
     """
+    if is_adapter_spec(engine):
+        return Path(sys.executable)
     env = os.environ.get(PYTHON_ENV.format(ENGINE=engine.upper()))
     if env:
         return Path(env)
@@ -76,5 +92,6 @@ __all__ = [
     "Support",
     "adapter_class",
     "engine_python",
+    "is_adapter_spec",
     "load_adapter",
 ]

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
+from core_corpus import write_corpus
 
 from canitoolcall.cli import EXIT_ERROR, EXIT_FAILURES, EXIT_OK, main
+from canitoolcall.results import RunResults
 
 
 def test_validate_ok(sample_fixtures_dir: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -33,6 +36,133 @@ def test_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out.startswith("canitoolcall ")
 
 
-def test_stub_commands_fail_cleanly(tmp_path: Path) -> None:
-    # Until the matrix builder lands, the command reports "not implemented" instead of crashing.
-    assert main(["matrix", "--results", str(tmp_path), "--out", str(tmp_path / "o")]) in (EXIT_OK, EXIT_ERROR)
+def test_matrix_delegates_to_matrix_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import canitoolcall.matrix
+
+    seen: dict[str, object] = {}
+
+    def fake_render(
+        results: Path, out: Path, templates: Path | None = None, *, fixtures_dir: Path | None = None
+    ) -> Path:
+        seen.update(results=results, out=out, templates=templates, fixtures_dir=fixtures_dir)
+        return out / "index.html"
+
+    monkeypatch.setattr(canitoolcall.matrix, "render_site", fake_render)
+    rc = main(["matrix", "--results", str(tmp_path / "r"), "--out", str(tmp_path / "o")])
+    assert rc == EXIT_OK
+    assert seen == {"results": tmp_path / "r", "out": tmp_path / "o", "templates": None, "fixtures_dir": None}
+    assert "index.html" in capsys.readouterr().out
+    rc = main(["matrix", "--results", str(tmp_path / "r"), "--out", str(tmp_path / "o"), "--fixtures", "fx"])
+    assert rc == EXIT_OK and seen["fixtures_dir"] == Path("fx")
+
+
+def test_matrix_missing_or_invalid_results_exit_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["matrix", "--results", str(tmp_path / "nope"), "--out", str(tmp_path / "o")]) == EXIT_ERROR
+    assert "canitoolcall matrix:" in capsys.readouterr().err
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "x.json").write_text('{"not": "a results file"}', encoding="utf-8")
+    assert main(["matrix", "--results", str(bad), "--out", str(tmp_path / "o")]) == EXIT_ERROR
+    assert "canitoolcall matrix:" in capsys.readouterr().err
+
+
+def test_validate_missing_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["validate", str(tmp_path / "nope")]) == EXIT_ERROR
+    assert "no such path" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- run
+
+
+@pytest.fixture
+def corpus(tmp_path: Path) -> Path:
+    return write_corpus(tmp_path / "fixtures")
+
+
+def _run_args(corpus: Path, out: Path, spec: str, env: dict[str, str], *extra: str) -> list[str]:
+    args = ["run", "--engine", spec, "--fixtures", str(corpus), "--python", sys.executable, "--out", str(out)]
+    args += [a for k, v in env.items() for a in ("--env", f"{k}={v}")]
+    return [*args, *extra]
+
+
+def test_run_passes(
+    tmp_path: Path,
+    corpus: Path,
+    reference_adapter_spec: str,
+    reference_env: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = main(_run_args(corpus, tmp_path / "res", reference_adapter_spec, reference_env, "--jobs", "2"))
+    out = capsys.readouterr().out
+    assert rc == EXIT_OK, out
+    assert (tmp_path / "res" / "reference-1.0.json").is_file()
+    assert "reference 1.0: 4 case(s)" in out
+    assert "pass=3" in out and "unsupported=1" in out
+
+
+def test_run_failures_exit_1(
+    tmp_path: Path,
+    corpus: Path,
+    reference_adapter_spec: str,
+    reference_env: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env = {**reference_env, "REFERENCE_ADAPTER_BUG": "leak"}
+    rc = main(
+        _run_args(corpus, tmp_path / "res", reference_adapter_spec, env, "--strategy", "one", "--observed", "all")
+    )
+    assert rc == EXIT_FAILURES
+    loaded = RunResults.load(tmp_path / "res" / "reference-1.0.json")
+    assert loaded.run.strategies == ("one",)
+    assert loaded.summary()["totals"]["fail"] >= 1
+
+
+def test_run_filters(
+    tmp_path: Path,
+    corpus: Path,
+    reference_adapter_spec: str,
+    reference_env: dict[str, str],
+) -> None:
+    args = _run_args(corpus, tmp_path / "res", reference_adapter_spec, reference_env)
+    assert main([*args, "--tag", "truncated", "--id", "qwen3-hermes/*", "--family", "qwen3-hermes"]) == EXIT_OK
+    loaded = RunResults.load(tmp_path / "res" / "reference-1.0.json")
+    assert [c.fixture_id for c in loaded.cases] == ["qwen3-hermes/derived-truncated"]
+
+
+def test_run_usage_errors_exit_2(
+    tmp_path: Path,
+    corpus: Path,
+    reference_adapter_spec: str,
+    reference_env: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    base = _run_args(corpus, tmp_path / "res", reference_adapter_spec, reference_env)
+    assert main([*base, "--family", "nope"]) == EXIT_ERROR
+    assert "no fixtures selected" in capsys.readouterr().err
+    assert main(_run_args(corpus, tmp_path / "res", "missing_mod:Adapter", reference_env)) == EXIT_ERROR
+    assert "canitoolcall run:" in capsys.readouterr().err
+    assert main([*base, "--strategy", "bogus:1"]) == EXIT_ERROR
+    with pytest.raises(SystemExit) as e:
+        main(["run", "--engine", "tgi"])
+    assert e.value.code == 2
+    with pytest.raises(SystemExit):
+        main([*base, "--jobs", "0"])
+    with pytest.raises(SystemExit):
+        main([*base, "--env", "NOEQUALS"])
+    assert not (tmp_path / "res").exists()
+
+
+def test_run_rejects_invalid_fixtures(
+    tmp_path: Path,
+    corpus: Path,
+    reference_adapter_spec: str,
+    reference_env: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (corpus / "qwen3-hermes" / "family.json").unlink()
+    base = _run_args(corpus, tmp_path / "res", reference_adapter_spec, reference_env, "--family", "other")
+    assert main(base) == EXIT_ERROR
+    assert "missing family.json" in capsys.readouterr().err
+    assert main([*base, "--no-validate"]) == EXIT_OK

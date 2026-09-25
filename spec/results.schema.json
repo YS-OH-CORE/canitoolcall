@@ -14,7 +14,7 @@
       "additionalProperties": false,
       "required": ["name", "version"],
       "properties": {
-        "name": { "enum": ["vllm", "sglang", "llamacpp", "ollama", "transformers"] },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$", "description": "Adapter name: vllm, sglang, llamacpp, ollama, transformers, or an out-of-tree adapter's name." },
         "version": { "type": "string", "description": "Version actually imported/built (e.g. 0.30.0 or a git sha)." },
         "commit": { "type": ["string", "null"] },
         "details": { "type": "object", "description": "Adapter-specific pins: key dependency versions, build flags, harness sha." }
@@ -113,9 +113,15 @@
       "properties": {
         "fixture_id": { "type": "string" },
         "family": { "type": "string" },
-        "status": { "$ref": "#/$defs/status", "description": "Worst status over all checks (fail > error > soft_pass > pass); unsupported if the adapter does not support the family/model." },
+        "status": { "$ref": "#/$defs/status", "description": "Worst status over the checks of realistic strategies (fail > error > soft_pass > pass); synthetic char:<seed> rows are reported but never counted. unsupported if the adapter does not support the family/model." },
+        "reason": { "type": ["string", "null"], "description": "Why the adapter declined the family/model (status unsupported)." },
         "parser_config": { "type": "object", "description": "Exact parser configuration used (parser names, template source + sha256, reasoning/thinking flags, tokenizer mode)." },
         "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+        "skipped_strategies": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Requested chunking strategies the worker could not run for this case, with the reason (e.g. special when the adapter does not expose special token ids)."
+        },
         "observed": {
           "type": "object",
           "description": "Raw observations; runners include them at least for non-pass cases so failures are reproducible.",

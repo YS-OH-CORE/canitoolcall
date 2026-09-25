@@ -41,10 +41,10 @@ Engines stream **tokens**, and special tokens are atomic. The spike showed that 
 
 1. Fixtures carry `output_token_ids` plus a `tokenizer` pin whenever the source allows it (spec/README.md, "Token ids come first").
 2. `Adapter.units(raw)` returns those ids (or the engine tokenizer's encoding of `raw_output` as a fallback).
-3. `chunking.split(units, strategy)` groups the ids. The default strategies are `one`, `token` and `rand:1..5:8`, all seeded and identical on every machine.
+3. `chunking.split(units, strategy, special=...)` groups the ids. The default strategies are `one`, `special` (split at special-token boundaries, using `Adapter.special_token_ids`), `token` and `rand:1..5:8`, all seeded and identical on every machine. If an adapter returns `None` from `special_token_ids`, the worker records `special` in the case's `skipped_strategies` instead of guessing.
 4. The adapter turns each id group into a text delta with **the engine's own detokenizer**, then calls the engine's streaming parser.
 
-`char:<seed>` exists as an opt-in stress strategy. The generic worker skips it, because it cannot be expressed as token groups. It is reported separately and never counts toward matrix status.
+`char:<seed>` exists as an opt-in stress strategy. It cannot be expressed as token groups, so the worker runs it only through an adapter's optional text path (`supports_text_deltas = True` plus `parse_stream_text`), and otherwise records it as skipped. Its rows are reported but never count toward the case or matrix status (`checks.case_status`).
 
 ## 3. Interfaces (core-owned)
 
@@ -53,14 +53,14 @@ The signatures below are frozen for the parallel build. If you need a change, do
 | Module | Key types / functions | State in skeleton |
 |---|---|---|
 | `fixtures.py` | `Fixture`, `Family`, `ReferenceModel`, `Provenance`, `Expected`, `ExpectedError`, `load_fixtures`, `load_families`, `validate`, `fixtures_digest`, `default_fixtures_dir` | **implemented** + tested |
-| `chunking.py` | `ChunkStrategy` (`id`, `parse`, `realistic`), `DEFAULT_STRATEGIES`, `group_sizes`, `split`, `parse_strategies` | **implemented** + tested (golden grouping pinned) |
-| `results.py` | `Status`, `worst_status`, `ParsedToolCall`, `ParseResult`, `Observation`, `CheckResult`, `CaseResult`, `EngineInfo`, `RunInfo`, `RunResults` (`to_dict`/`from_dict`/`write`/`load`) | **implemented** + tested against `spec/results.schema.json` |
-| `adapters/base.py` | `Adapter` ABC (`name`, `pinned_version`, `version`, `supports`, `parser_config`, `units`, `parse`, `parse_stream`, `engine_details`, `commit`, `close`), `ReplayInput`, `Support`, `AdapterUnavailable` | **implemented** |
-| `adapters/__init__.py` | `ENGINES` registry, `adapter_class`, `load_adapter`, `engine_python` | **implemented** |
-| `adapters/worker.py` | protocol v1: `hello`, `replay`, `handle`, `serve`, `main` | **implemented** + tested with a fake adapter |
-| `checks.py` | `normalize_text`, `canonical`, `compare`, `check_*` (8 checks), `ALL_CHECKS`, `run_checks` | stubs |
-| `runner.py` | `RunConfig`, `WorkerClient`, `WorkerError`, `evaluate`, `run`, `run_and_write` | stubs |
-| `cli.py` | `run`, `probe`, `matrix`, `validate`, `engines` | **implemented** (dispatches to stubs; a stub exits with code 2 and a "not implemented yet" message) |
+| `chunking.py` | `ChunkStrategy` (`id`, `parse`, `realistic`), `DEFAULT_STRATEGIES`, `group_sizes`, `special_group_sizes`, `split`, `split_text`, `parse_strategies` | **implemented** + tested (golden grouping pinned) |
+| `results.py` | `Status`, `worst_status`, `ParsedToolCall`, `ParseResult`, `Observation`, `CheckResult`, `CaseResult` (+ optional `reason`, `skipped_strategies`), `EngineInfo`, `RunInfo`, `RunResults` (`to_dict`/`from_dict`/atomic `write`/`load`) | **implemented** + tested against `spec/results.schema.json` |
+| `adapters/base.py` | `Adapter` ABC (`name`, `pinned_version`, `version`, `supports`, `parser_config`, `units`, `parse`, `parse_stream`, `engine_details`, `commit`, `close`; optional `special_token_ids`, `supports_text_deltas` + `parse_stream_text`), `ReplayInput`, `Support`, `AdapterUnavailable` | **implemented** |
+| `adapters/__init__.py` | `ENGINES` registry, `adapter_class` (registry name or `package.module:Class` spec), `is_adapter_spec`, `load_adapter`, `engine_python` | **implemented** |
+| `adapters/worker.py` | protocol v1: `hello` (+ `pinned_version`, `python`), `replay` (+ `skipped`), `handle`, `serve`, `main` (protocol on a private dup of fd 1) | **implemented** + tested with fake and reference adapters |
+| `checks.py` | `normalize_text`, `canonical`, `canonical_arguments`, `compare`, `describe_difference`, `expected_as_result`, `is_synthetic`, `case_status`, `check_*` (8 checks), `ALL_CHECKS`, `run_checks` | **implemented** + tested |
+| `runner.py` | `RunConfig` (+ `tags`, `ids`, `jobs`, `validate`), `WorkerClient`, `WorkerError` (`fatal`), `FixtureValidationError`, `evaluate`, `replay_case`, `run`, `run_and_write` | **implemented** + tested end to end with the reference adapter |
+| `cli.py` | `run` (`--tag`, `--id`, `--jobs`, `--env`, `--no-validate`), `probe`, `matrix`, `validate`, `engines` | **implemented** |
 | `probe.py` | `Scenario`, `ProbeExpectation`, `ProbeOutcome`, `ProbeReport`, `BUILTIN_SCENARIOS`, `chat`, `evaluate`, `probe` | stubs |
 | `pytest_plugin.py` | options, `pytest_generate_tests`, `assert_conforms` | options done; rest stubs |
 | `matrix.py` | `Cell`, `Matrix`, `load_results`, `build_matrix`, `render_site` | stubs |
@@ -83,9 +83,9 @@ Each rule was found by the spike **breaking without it**:
 5. **Stop tokens.** `raw_output` ends **before** the stop token (`ReplayInput.stop_tokens`, from `generation_config.json`). If an engine needs the stop token in the text (SGLang's gpt-oss detector needs `<|call|>`), the adapter re-appends exactly what that engine's server would keep, and records it in `parser_config`.
 6. **Engine exceptions are outcomes.** Catch them and return `ParseResult(exception="Type: msg")`. Raise only for harness problems; the runner records those as `error`.
 7. **Pin everything.** `parser_config(raw)` records the tool/reasoning parser names, template source + sha256, `enable_thinking`/`reasoning_format`, tokenizer mode and repo@revision. For llama.cpp, the template **source** matters: the current HF DeepSeek-V3.1 template fails where llama.cpp's own `models/templates/` copy works.
-8. **Stream accumulation** is OpenAI-client style. Concatenate content and reasoning deltas, and merge tool-call deltas by `index`: the name is set once, and argument fragments are concatenated into `arguments_raw`.
+8. **Stream accumulation** is OpenAI-client style. Concatenate content and reasoning deltas, and merge tool-call deltas by `index`: argument fragments are concatenated into `arguments_raw`. The name comes from the first delta that carries it. If an engine sends the name again in later deltas, adapters follow openai-python's `accumulate_delta`, which concatenates the fragments, so a repeated name shows up in results the way a real client would see it.
 9. **`supports(family, model)` is honest and cheap.** If the engine has no parser for a model version (for example, SGLang 0.5.20 has none for DeepSeek-V4.1), return `Support(False, reason)`. The runner reports `unsupported`.
-10. **Offline by default.** Tokenizers and templates are fetched once into the HF cache at pinned revisions (config and tokenizer files only, never weights). Tests set `HF_HUB_OFFLINE=1` when the cache is warm.
+10. **Offline by default.** Tokenizers and templates are fetched once into the HF cache at pinned revisions (config and tokenizer files only, never weights). Tests set `HF_HUB_OFFLINE=1` when the cache is warm. Full runs should pass `--env HF_HUB_OFFLINE=1` too: some tokenizer paths (vLLM's Mistral mode) list repo files over the network even at a pinned revision, and bulk runs then hit Hub rate limits.
 
 ### Checks and normalization
 
@@ -115,6 +115,8 @@ Shared-resource rules:
 ### core
 Implement `checks.py` (all 8 checks, soft-v1, leakage against `family.markers`, lazy `jsonschema`) and `runner.py` (`WorkerClient` with timeouts and restart-after-crash, `evaluate`, `run`, `run_and_write`; the run metadata is timestamps, platform, fixtures digest, strategy ids and normalization). Unit-test checks with hand-built `ParseResult`s. Test the runner end to end with a fake-engine worker (for example via `$CANITOOLCALL_<ENGINE>_PYTHON` pointing at the dev interpreter and a test adapter).
 
+Done. The runner tests drive real worker subprocesses that run `tests/core/reference_adapter.py`, a pure-Python Hermes-style parser, through its `module:Class` spec. It is test-only, never registered in `ENGINES`, and never shown in the matrix. Faults are injected with `$REFERENCE_ADAPTER_BUG`: leak, drop-one, raise, harness, crash, hang, no-special and noisy. They prove that the checks, restart-after-crash, timeouts and the clean protocol channel all work.
+
 ### fixture groups
 Aim for ~22 fixtures per family (≥150 overall, ~200 target). Every fixture needs mandatory provenance, and every family needs a `family.json` (markers, reference models at pinned revisions, stop tokens, generation prompt). Sources, in order of preference:
 1. **Generator scripts in `scripts/fixtures/<slug>/`** that render through the official template or encoder with `apply_chat_template(tokenize=True)` and store `output_token_ids`. They run in `.venvs/transformers`, or in a venv with `openai-harmony`/`mistral_common` for those families.
@@ -136,7 +138,7 @@ The reference implementations are in `.spikes/<engine>/`. The spike's results fi
 |---|---|---|---|
 | vllm | 0.30.0 | `.venvs/vllm` (py3.12; manylinux aarch64 wheel unzipped under `.engines/vllm/`, added via `.pth`; CPU torch) | `ParserManager` path; the Harmony path uses `is_harmony`; `tokenizer_mode='mistral'` for Mistral |
 | sglang | 0.5.20 | `.venvs/sglang` (same unzip + `.pth` approach) | text-only parsers; the gpt-oss detector needs `<|call|>` |
-| llamacpp | `a25c9865` | `.engines/llamacpp/` clone + harness build (cmake, ~16 s); `.venvs/llamacpp` for `convert_hf_to_gguf.py` | batch JSON-lines mode; exact vocab-GGUF detokenization; pin the template source |
+| llamacpp | `a25c9865` | `.engines/llamacpp/` clone + harness build (cmake, ~16 s); `.venvs/llamacpp` for `convert_hf_to_gguf.py`, plus a fallback converter env `.engines/llamacpp/convert-tf5` (llama.cpp's requirements with transformers 5.17.0) for repos whose tokenizer files the pinned transformers 4.57.6 cannot read; each GGUF's `.vocab.json` sidecar records which env built it | batch JSON-lines mode; exact vocab-GGUF detokenization; pin the template source |
 | transformers | 5.17.0 | `.venvs/transformers` | supported only where the Hub repo ships `response_template` (Gemma 4 today) |
 | ollama (stretch) | `7af39318` | `.engines/ollama/` clone + `go build` (GOTOOLCHAIN=auto) | built-in parsers first; the legacy `tools.NewParser` path is a stretch goal; reuse the vocab GGUFs |
 
@@ -154,14 +156,17 @@ Each adapter test file must contain:
   - `nightly.yml`: engine setup scripts, `canitoolcall run` per engine, `canitoolcall matrix`, and a Pages artifact.
 - Nothing is pushed or published from this machine. `docs/PUBLISHING.md` lists the human steps.
 
-## 6. Candidate discrepancies from the spike (untriaged)
+## 6. Discrepancies found (see `results/2026-09-25/`)
 
-These must be turned into fixtures and re-verified before anyone reports them upstream:
-- vLLM `deepseek_v31`, SGLang `hermes`/`deepseekv31`: the call is lost or has empty arguments when the whole output arrives in one delta.
-- SGLang `glm45`: `\n<think>` leaks into `reasoning_content`.
-- llama.cpp: the current HF DeepSeek-V3.1 template yields malformed `preserved_tokens`.
-- Ollama `qwen3-thinking`: whether `thinking` has a leading newline depends on the chunking.
-- Mistral: history renders contain `[CALL_ID]`, which parsers don't expect. This is probably not a bug, since the model doesn't generate it.
+The spike's candidate discrepancies were turned into fixtures and re-verified by full runs. `results/2026-09-25/triage.jsonl` assigns every failing case to one finding, with a repro command. `tests/core/test_results_snapshot.py` keeps that record consistent with the committed results. What happened to the spike's candidates:
+
+- vLLM `deepseek_v3`/`deepseek_v31`, SGLang `qwen25`/`deepseekv3`/`deepseekv31`: **confirmed**. A call (or its arguments) is lost when a delta carries a whole call. The SGLang case is also reproduced directly against `Qwen25Detector` (`results/2026-09-25/repro/`).
+- SGLang `glm45`: **confirmed**. `\n<think>` leaks into non-streaming `reasoning_content`.
+- llama.cpp DeepSeek-V3.1 HF template: **confirmed**, and it also affects DeepSeek-V3-0324. The autoparser derives malformed `preserved_tokens`, so `<｜tool▁sep｜>` is never rendered and every call fails to parse.
+- Ollama `qwen3-thinking` leading newline: a whitespace-only split variance (`soft_pass`), not a failure.
+- Mistral `[CALL_ID]`: **not a bug**. The model never generates it (mistral-common's generation grammar), so it is triaged as `not_generated_by_model`.
+
+Nothing has been reported upstream. Each finding must be re-checked against the engine's latest release first.
 
 ## 7. Definition of done (v0.1)
 

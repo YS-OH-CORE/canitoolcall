@@ -11,6 +11,9 @@ Standard library only (ParseResult crosses the worker boundary as JSON).
 from __future__ import annotations
 
 import json
+import os
+import re
+import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -136,6 +139,10 @@ class CaseResult:
     parser_config: Mapping[str, Any] | None = None
     observed: Observation | None = None
     harness_error: str | None = None
+    reason: str | None = None
+    """Why the adapter declined (set when status is ``unsupported``)."""
+    skipped_strategies: Mapping[str, str] = field(default_factory=dict)
+    """Requested strategies the worker could not run, with the reason."""
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -144,6 +151,10 @@ class CaseResult:
             "status": self.status.value,
             "checks": [c.to_dict() for c in self.checks],
         }
+        if self.reason is not None:
+            out["reason"] = self.reason
+        if self.skipped_strategies:
+            out["skipped_strategies"] = dict(self.skipped_strategies)
         if self.parser_config is not None:
             out["parser_config"] = dict(self.parser_config)
         if self.observed is not None:
@@ -162,6 +173,8 @@ class CaseResult:
             parser_config=d.get("parser_config"),
             observed=Observation.from_dict(d["observed"]) if d.get("observed") else None,
             harness_error=d.get("harness_error"),
+            reason=d.get("reason"),
+            skipped_strategies=dict(d.get("skipped_strategies") or {}),
         )
 
 
@@ -182,6 +195,9 @@ class RunInfo:
     fixtures_digest: str
     strategies: tuple[str, ...]
     normalization: str
+
+
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._+-]")
 
 
 def _counts(cases: Iterable[CaseResult]) -> dict[str, int]:
@@ -236,12 +252,25 @@ class RunResults:
         )
 
     def default_filename(self) -> str:
-        return f"{self.engine.name}-{self.engine.version}.json"
+        """``<engine>-<version>.json`` with filesystem-unsafe characters replaced by ``_``."""
+        return _SAFE_NAME.sub("_", f"{self.engine.name}-{self.engine.version}") + ".json"
 
     def write(self, path: Path) -> Path:
-        """Write pretty, key-stable JSON; returns ``path``."""
+        """Write pretty, key-stable JSON atomically; returns ``path``.
+
+        The file is written to a temporary sibling and renamed into place, so
+        concurrent runs and readers never see a partial file.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        text = json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n"
+        fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
         return path
 
     @classmethod

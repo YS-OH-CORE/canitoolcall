@@ -10,6 +10,10 @@ Strategy ids (stable, recorded in results):
 
 =====================  ======================================================
 ``one``                whole output as a single delta
+``special``            split at special-token boundaries: every special unit
+                       is its own delta, and each run of ordinary units
+                       between them is one delta (needs the engine's set of
+                       special token ids; see ``Adapter.special_token_ids``)
 ``token``              one unit per delta
 ``rand:<seed>:<max>``  groups of 1..max units drawn from ``random.Random(seed)``
 ``char:<seed>``        synthetic character groups (seed 0 = per character,
@@ -22,13 +26,13 @@ Standard library only (imported inside engine venvs).
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeVar
 
 T = TypeVar("T")
 
-StrategyKind = Literal["one", "token", "rand", "char"]
+StrategyKind = Literal["one", "special", "token", "rand", "char"]
 
 
 @dataclass(frozen=True)
@@ -55,10 +59,10 @@ class ChunkStrategy:
 
     @classmethod
     def parse(cls, spec: str) -> ChunkStrategy:
-        """Parse a strategy id (``one``, ``token``, ``rand:S[:M]``, ``char:S``)."""
+        """Parse a strategy id (``one``, ``special``, ``token``, ``rand:S[:M]``, ``char:S``)."""
         parts = spec.strip().split(":")
         kind = parts[0]
-        if kind in ("one", "token") and len(parts) == 1:
+        if kind in ("one", "special", "token") and len(parts) == 1:
             return cls(kind)  # type: ignore[arg-type]
         if kind == "rand" and len(parts) in (2, 3):
             max_group = int(parts[2]) if len(parts) == 3 else 8
@@ -72,18 +76,49 @@ class ChunkStrategy:
 
 DEFAULT_STRATEGIES: tuple[ChunkStrategy, ...] = (
     ChunkStrategy("one"),
+    ChunkStrategy("special"),
     ChunkStrategy("token"),
     *(ChunkStrategy("rand", seed=s, max_group=8) for s in range(1, 6)),
 )
-"""The default replay set: one chunk, per token, and 5 seeded random groupings."""
+"""The default replay set: one chunk, special-token boundaries, per token, and
+5 seeded random groupings."""
 
 
-def group_sizes(n_units: int, strategy: ChunkStrategy) -> list[int]:
+def special_group_sizes(special_mask: Sequence[bool]) -> list[int]:
+    """Group sizes for the ``special`` strategy.
+
+    Each unit flagged special forms its own group; each maximal run of
+    ordinary units between them forms one group. With no special units the
+    result equals the ``one`` strategy.
+    """
+    sizes: list[int] = []
+    run = 0
+    for is_special in special_mask:
+        if is_special:
+            if run:
+                sizes.append(run)
+                run = 0
+            sizes.append(1)
+        else:
+            run += 1
+    if run:
+        sizes.append(run)
+    return sizes
+
+
+def group_sizes(n_units: int, strategy: ChunkStrategy, special_mask: Sequence[bool] | None = None) -> list[int]:
     """Sizes of consecutive groups covering ``n_units`` units (sum == n_units).
 
     An empty input yields ``[]`` for every strategy. The result depends only on
-    ``(n_units, strategy)``, so it is identical on every machine.
+    ``(n_units, strategy)`` (and ``special_mask`` for ``special``), so it is
+    identical on every machine.
+
+    Raises ``ValueError`` for ``special`` without a mask of length ``n_units``.
     """
+    if strategy.kind == "special":
+        if special_mask is None or len(special_mask) != max(n_units, 0):
+            raise ValueError("the 'special' strategy needs a special-unit mask with one flag per unit")
+        return special_group_sizes(special_mask)
     if n_units <= 0:
         return []
     if strategy.kind == "one":
@@ -101,11 +136,16 @@ def group_sizes(n_units: int, strategy: ChunkStrategy) -> list[int]:
     return sizes
 
 
-def split(units: Sequence[T], strategy: ChunkStrategy) -> list[list[T]]:
-    """Split ``units`` into consecutive groups according to ``strategy``."""
+def split(units: Sequence[T], strategy: ChunkStrategy, special: Collection[T] | None = None) -> list[list[T]]:
+    """Split ``units`` into consecutive groups according to ``strategy``.
+
+    ``special`` is the set of special units (token ids) and is required by the
+    ``special`` strategy only; other strategies ignore it.
+    """
+    mask = [u in special for u in units] if special is not None and strategy.kind == "special" else None
     out: list[list[T]] = []
     i = 0
-    for k in group_sizes(len(units), strategy):
+    for k in group_sizes(len(units), strategy, mask):
         out.append(list(units[i : i + k]))
         i += k
     return out

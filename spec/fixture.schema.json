@@ -107,8 +107,8 @@
       "required": ["kind", "source_url", "revision", "license"],
       "properties": {
         "kind": {
-          "description": "template_render: produced by rendering an assistant message through the official chat template/encoder (script in scripts/fixtures/). engine_test: copied from an engine's test suite. bug_report: taken from a public issue or PR. recorded: a real generation captured from a model.",
-          "enum": ["template_render", "engine_test", "bug_report", "recorded"]
+          "description": "template_render: produced by rendering an assistant message through the official chat template/encoder (script in scripts/fixtures/). engine_test: copied from an engine's test suite. bug_report: taken from a public issue or PR. recorded: a real generation captured from a model. spec_example: quoted verbatim from the format's official specification or reference-library documentation.",
+          "enum": ["template_render", "engine_test", "bug_report", "recorded", "spec_example"]
         },
         "source_url": {
           "description": "Where the content comes from: the template file, the test file (with line anchor), the issue/PR, or the recording log.",
