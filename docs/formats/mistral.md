@@ -101,7 +101,7 @@ All of these are control tokens. With `skip_special_tokens=True` they disappear 
 | llama.cpp v0.5.0 | PEG, from template. Test templates: `Mistral-Small-3.2-24B-Instruct-2506.jinja`, `mistralai-Ministral-3-14B-Reasoning-2512.jinja`, `mistralai-Mistral-Nemo-Instruct-2407.jinja`, `unsloth-mistral-Devstral-Small-2507.jinja` | same | |
 | Ollama v0.34.4 | `ministral`, plus generic template-driven detection for older models | | |
 
-**`[CALL_ID]` (v11) handling is unverified.** A grep of `vllm/parser/mistral.py` and SGLang `mistral_detector.py` at these versions found **no occurrence of `CALL_ID`**. Whether v11 outputs with `[CALL_ID]` parse correctly is **not verified by running**, which makes it a priority fixture.
+**`[CALL_ID]` (v11) is not in the generation grammar.** mistral-common 1.12.0 constrains generation with `guidance/grammar_factory.py` `_TOOL_CALL_GRAMMAR = "{tool_calls_token} SAFE_WS? {tool_name} {args_token} SAFE_WS? %json {args_json} SAFE_WS?"`, which has no call id, and `InstructTokenizerV11` only writes `[CALL_ID]id` when the history message carries an id. llama.cpp's tests nevertheless parse `[TOOL_CALLS]name[CALL_ID]id[ARGS]{…}` (`tests/test-chat.cpp`, Mistral Small 3.2), so the fixtures cover both shapes: `[CALL_ID]` cases come from those engine tests, never from history renders.
 
 **Fixture sources (Apache-2.0):**
 - vLLM: `tests/tool_use/mistral/test_mistral_tool_calls.py`, `tests/parser/mistral/`
@@ -135,3 +135,16 @@ All of these are control tokens. With `skip_special_tokens=True` they disappear 
 - `id-format-9-alnum`
 - `skip-special-tokens`
 - `stop-at-open-marker`
+
+## Fixtures (`fixtures/mistral/`)
+
+| File | Source | Generator |
+|---|---|---|
+| `rendered.jsonl` | `mistral-common` 1.12.0 renders for v13 + `[THINK]` (Magistral-Small-2509, reference), v13 instruct (Ministral-3-14B-Instruct-2512), v11 (Mistral-Small-3.2) and v3 (Mistral-7B-Instruct-v0.3) | `scripts/fixtures/mistral/render_mistral.py` |
+| `imported.jsonl` | vLLM v0.30.0 `tests/parser/mistral/`, llama.cpp v0.5.0 `tests/test-chat.cpp` (Ministral-3 Reasoning, Mistral-Small-3.2 `[CALL_ID]`, Devstral), Ollama #11470 | `scripts/fixtures/mistral/import_mistral.py` |
+
+Conventions:
+- Every fixture carries `output_token_ids`. Tekken models are pinned with `mode: mistral`. Mistral-7B-v0.3 is pinned with `mode: hf`: its `tokenizer.json` has the same ids, and the HF decoder turns SentencePiece `▁` into spaces.
+- Renders use no call ids, matching the generation grammar. v13+ validation requires ids but never tokenizes them; the script asserts that `[CALL_ID]` is absent.
+- Extra models are listed in `models` only when their own tokenizer renders byte-identical ids.
+- For copied strings, control markers become control-token ids and the text between them is encoded normally (vLLM's `encode_mistral_output`).

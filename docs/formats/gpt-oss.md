@@ -114,3 +114,17 @@ The spec's own examples also differ in spacing before `<|constrain|>`. One has `
 - `malformed-channel`
 - `unicode`
 - `nested-json`
+
+## Fixtures (`fixtures/gpt-oss/`)
+
+| File | Source | Generator |
+|---|---|---|
+| `rendered.jsonl` | `openai-harmony` 0.0.8 (`render_conversation`, `auto_drop_analysis=False`) and the HF `chat_template.jinja` at `6cee5e8` | `scripts/fixtures/gpt-oss/render_gpt_oss.py` |
+| `imported.jsonl` | vLLM v0.30.0 `tests/parser/test_harmony.py`, llama.cpp v0.5.0 `tests/test-chat.cpp`, `openai/harmony` tests and spec at `abd677f`, bug reports (vLLM #58384, llama.cpp #27720) | `scripts/fixtures/gpt-oss/import_gpt_oss.py` |
+
+Regenerate with `uv run --script scripts/fixtures/gpt-oss/<script>.py` (PEP 723 dependencies, Python 3.12). Conventions:
+- `raw_output` ends before `<|call|>`/`<|return|>`. A history render closes the last `final` message with `<|end|>`, where a generation has the stop token `<|return|>`, so that trailing `<|end|>` is removed.
+- Token ids come from the Harmony encoder (`encode(text, allowed_special="all")` for copied strings, as vLLM's tests do). Marker strings inside argument or reasoning text are ordinary text tokens.
+- History renders put the recipient in the role header. Channel-header recipients (`<|channel|>commentary to=functions.X`) come only from engine tests and the Harmony spec.
+- The render script checks each complete Harmony render against `openai-harmony`'s own parser (HF-template renders are not checked this way).
+- Consecutive calls separated by `<|call|>` (`vllm-sequential-calls`, `vllm-call-then-final`) only reach a parser when the stop token is not applied.

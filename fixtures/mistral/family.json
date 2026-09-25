@@ -1,0 +1,125 @@
+{
+  "slug": "mistral",
+  "name": "Mistral / Magistral / Ministral / Devstral ([TOOL_CALLS])",
+  "spec_version": "0.1",
+  "has_reasoning": true,
+  "markers": [
+    "[TOOL_CALLS]",
+    "[ARGS]",
+    "[CALL_ID]",
+    "[THINK]",
+    "[/THINK]",
+    "[INST]",
+    "[/INST]",
+    "[TOOL_RESULTS]",
+    "[/TOOL_RESULTS]",
+    "[AVAILABLE_TOOLS]",
+    "</s>",
+    "<think>",
+    "</think>"
+  ],
+  "reference_models": [
+    {
+      "repo": "mistralai/Magistral-Small-2509",
+      "revision": "a31cc96ab10cf19bc42c628fedf1e359e0853c49",
+      "variant": "v13-think",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Ministral-3-14B-Reasoning-2512",
+      "revision": "51f9210f3cd20f3452a80d5819d15dc61cc50630",
+      "variant": "v13-think",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Mistral-Small-4-119B-2603",
+      "revision": "a11f36bebf709121056b1dbcc943d1c6afbe494d",
+      "variant": "v13plus-think",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Mistral-Medium-3.5-128B",
+      "revision": "22b2b868a15677cfa6061277ed2f653d1349a9ab",
+      "variant": "v13plus-think",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Ministral-3-14B-Instruct-2512",
+      "revision": "29439f81c2be264d8d393273f99e7db9c0961120",
+      "variant": "v13",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Devstral-Small-2-24B-Instruct-2512",
+      "revision": "55c5b41e98c2dbd21b0c8afffc540dcfc9eb5128",
+      "variant": "v13",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Devstral-Small-2507",
+      "revision": "bd165ab26cebbcc2eea2c4ecbfc07f3ac42b3c39",
+      "variant": "devstral-2507",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "revision": "95a6d26c4bfb886c58daf9d3f7332c857cb27b43",
+      "variant": "v11",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Magistral-Small-2506",
+      "revision": "ad2fce5b4113139e1877dcadfd826c9262ad8e8c",
+      "variant": "v11-think-text",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "mistral"
+    },
+    {
+      "repo": "mistralai/Mistral-7B-Instruct-v0.3",
+      "revision": "c170c708c41dac9275d15a8fff4eca08d52bab71",
+      "variant": "v3",
+      "default_generation_prompt": "[/INST]",
+      "stop_tokens": [
+        "</s>"
+      ],
+      "tokenizer_mode": "hf"
+    }
+  ],
+  "format_notes": "docs/formats/mistral.md",
+  "notes": "The format is defined by the mistral-common tokenizer version (v3 JSON array, v11/v13+ [TOOL_CALLS]name[ARGS]{json}, [THINK] control tokens in v13+ reasoning models). Control tokens cannot be recovered from text with mistral-common, so every fixture carries output_token_ids. Generators: scripts/fixtures/mistral/."
+}

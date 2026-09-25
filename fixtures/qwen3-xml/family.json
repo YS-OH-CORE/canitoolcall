@@ -1,0 +1,89 @@
+{
+  "slug": "qwen3-xml",
+  "name": "Qwen XML tool calls (Qwen3-Coder, Qwen3.5/3.6/3.8)",
+  "spec_version": "0.1",
+  "has_reasoning": true,
+  "markers": [
+    "<tool_call>",
+    "</tool_call>",
+    "<function=",
+    "</function>",
+    "<parameter=",
+    "</parameter>",
+    "<think>",
+    "</think>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|endoftext|>"
+  ],
+  "reference_models": [
+    {
+      "repo": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "variant": "qwen3.8",
+      "default_generation_prompt": "<|im_start|>assistant\n<think>\n",
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "Qwen/Qwen3.6-35B-A3B",
+      "revision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+      "variant": "qwen3.6",
+      "default_generation_prompt": "<|im_start|>assistant\n<think>\n",
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "Qwen/Qwen3.5-9B",
+      "revision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+      "variant": "qwen3.5",
+      "default_generation_prompt": "<|im_start|>assistant\n<think>\n",
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+      "revision": "b2cff646eb4bb1d68355c01b18ae02e7cf42d120",
+      "variant": "qwen3-coder",
+      "default_generation_prompt": "<|im_start|>assistant\n",
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "revision": "9d90cf8fca1bf7b7acca42d3fc9ae694a2194069",
+      "variant": "qwen3-coder",
+      "default_generation_prompt": "<|im_start|>assistant\n",
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "Qwen/Qwen3-Coder-Next",
+      "revision": "a7fbcb5c0e12d62a448eaa0e260346bf5dcc0feb",
+      "variant": "qwen3-coder-next",
+      "default_generation_prompt": "<|im_start|>assistant\n",
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "tokenizer_mode": "hf"
+    }
+  ],
+  "format_notes": "docs/formats/qwen3-xml.md",
+  "notes": "Qwen3.5+ pre-fill '<think>\\n' in the generation prompt (thinking on by default); fixtures with enable_thinking=false carry generation_prompt '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n'. Parameter values are raw text: scalars must be coerced with the tool's JSON schema. Stop tokens are from generation_config.json. Generators: scripts/fixtures/qwen3-xml/."
+}

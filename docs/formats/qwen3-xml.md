@@ -17,7 +17,7 @@ Each call is:
 - zero or more `<parameter=KEY>` + `\n` + VALUE + `\n` + `</parameter>` + `\n`
 - `</function>` + `\n` + `</tool_call>`
 
-**Parallel calls** are separate `<tool_call>` blocks joined by `\n`. If there is text content, the first call is preceded by `\n\n` in Qwen3.5+, or by `\n` in Qwen3-Coder.
+**Parallel calls** are separate `<tool_call>` blocks joined by `\n`. If there is text content, the first call is preceded by `\n\n` of markup in both Qwen3.5+ and Qwen3-Coder (the Coder template writes `'\n' + content + '\n'` and then `'\n<tool_call>'`; verified by rendering with transformers 5.17).
 
 **Values are raw text, not JSON:**
 - String values are inserted verbatim, with no escaping at all. Quotes, `<`, `&` and newlines all appear literally.
@@ -63,7 +63,7 @@ café "best"
 
 Qwen3-Coder-30B-A3B (rev `b2cff64`) produces the same call block, with three differences:
 - no `<think>`
-- a leading `\n` before the first `<tool_call>`, even when there is no content
+- the `\n` after `<|im_start|>assistant` is emitted by the tool-call prefix (`'\n<tool_call>'`) rather than the role header. The generation prompt `<|im_start|>assistant\n` already contains it, so a completion without content starts directly with `<tool_call>`
 - `</tool_response>\n` before `<|im_end|>`
 
 ### Scalar serialization differs between template revisions (verified by rendering)
@@ -153,3 +153,17 @@ The older templates use Jinja `| string` on Python values, which yields `True`/`
 - `think-no-open-tag`
 - `parallel`
 - `text-after-call`
+
+## Fixtures (`fixtures/qwen3-xml/`)
+
+| File | Source | Generator |
+|---|---|---|
+| `rendered.jsonl` | HF chat templates of Qwen3.8-27B (reference; Qwen3.6-35B-A3B listed when byte-identical), Qwen3.5-9B, Qwen3-Coder-30B-A3B (+480B when identical) and Qwen3-Coder-Next | `scripts/fixtures/qwen3-xml/render_qwen3_xml.py` |
+| `imported.jsonl` | llama.cpp v0.5.0 `tests/test-chat.cpp` (Qwen3.5-4B and Qwen3-Coder templates), vLLM v0.30.0 `tests/tool_parsers/test_qwen3coder_tool_parser.py`, bug reports (vLLM #57699, Ollama #18530, #18421, SGLang #40739) | `scripts/fixtures/qwen3-xml/import_qwen3_xml.py` |
+
+Conventions:
+- Qwen3.5+ fixtures set `generation_prompt`: `<|im_start|>assistant\n<think>\n` by default, or the pre-filled empty think block when `thinking` is false. `raw_output` therefore starts inside the reasoning.
+- If the prompt/completion boundary falls inside a merged BPE token (an empty reasoning renders `<think>\n\n</think>`), the render is sliced as text and the remainder re-encoded. The fixture's notes say so.
+- Expected `content` omits the markup newlines between text and `<tool_call>`, so engines that keep them get `soft_pass`.
+- Scalar arguments are expected in their JSON-schema type (`"02139"` stays a string, `True` with a boolean schema becomes `true`).
+- `q38-marker-in-arguments` and `coder-marker-in-arguments` contain marker text that is not at a line start. Only one parse is consistent with the template (a value always ends with `\n</parameter>`). The fully line-aligned case is ambiguous and deliberately not included.

@@ -1,0 +1,41 @@
+{
+  "slug": "gpt-oss",
+  "name": "gpt-oss (Harmony response format)",
+  "spec_version": "0.1",
+  "has_reasoning": true,
+  "markers": [
+    "<|start|>",
+    "<|end|>",
+    "<|message|>",
+    "<|channel|>",
+    "<|constrain|>",
+    "<|call|>",
+    "<|return|>"
+  ],
+  "reference_models": [
+    {
+      "repo": "openai/gpt-oss-20b",
+      "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "variant": "gpt-oss",
+      "default_generation_prompt": "<|start|>assistant",
+      "stop_tokens": [
+        "<|call|>",
+        "<|return|>"
+      ],
+      "tokenizer_mode": "hf"
+    },
+    {
+      "repo": "openai/gpt-oss-120b",
+      "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+      "variant": "gpt-oss",
+      "default_generation_prompt": "<|start|>assistant",
+      "stop_tokens": [
+        "<|call|>",
+        "<|return|>"
+      ],
+      "tokenizer_mode": "hf"
+    }
+  ],
+  "format_notes": "docs/formats/gpt-oss.md",
+  "notes": "Stop tokens are from generation_config.json (eos_token_id [200002, 199999, 200012]); <|end|> is not a stop token. raw_output ends before <|call|>/<|return|>. Generators: scripts/fixtures/gpt-oss/."
+}
