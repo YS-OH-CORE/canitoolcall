@@ -60,7 +60,7 @@ strict; whitespace-only differences are counted separately as soft passes.
           {% endfor %}
         </ul>
         {% endif %}
-        {% if c.stress_failures %}<span class="stress">stress (char) failures: {{ c.stress_failures }}</span>{% endif %}
+        {% if c.stress_failures %}<span class="stress">synthetic-strategy failures (not counted): {{ c.stress_failures }}</span>{% endif %}
       </td>
       {% endif %}
       {% endfor %}
@@ -129,7 +129,7 @@ non-streaming parse and every realistic chunking strategy.</p>
       <td>{{ run.run.python }}</td>
       <td>{{ run.canitoolcall_version }}</td>
       <td><code title="{{ run.run.fixtures_digest }}">{{ run.run.fixtures_digest|short }}</code></td>
-      <td>{{ run.run.strategies|join(", ") }}</td>
+      <td>{{ run.run.strategies|join(", ") }}{% if run.run.synthetic_strategies %}<br><span class="muted">not counted: {{ run.run.synthetic_strategies|join(", ") }}</span>{% endif %}</td>
       <td>{% set f = data_files.get((run.engine.name, run.engine.version)) %}{% if f %}<a href="{{ f }}">JSON</a>{% endif %}</td>
     </tr>
     {% endfor %}

@@ -135,6 +135,15 @@ class Fixture:
         """``models[0]``: the model whose tokenizer/template adapters use."""
         return self.models[0]
 
+    @property
+    def truncated(self) -> bool:
+        """True when generation was cut by ``max_tokens`` (the ``truncated`` tag).
+
+        The model emitted no stop token, so adapters must replay the output
+        with ``finish_reason: "length"`` and never append one.
+        """
+        return "truncated" in self.tags
+
     @classmethod
     def from_dict(cls, d: Mapping[str, Any], source: Path | None = None, line: int | None = None) -> Fixture:
         """Build a Fixture from a decoded JSONL record (assumed schema-valid)."""
@@ -216,6 +225,34 @@ class ReferenceModel:
     stop_tokens: tuple[str, ...] = ()
     gated: bool = False
     tokenizer_mode: Literal["hf", "mistral"] = "hf"
+    mirror: tuple[str, str] | None = None
+    """``(repo, revision)`` of the ungated mirror fixtures pin as ``tokenizer`` (gated repos only)."""
+
+    @classmethod
+    def from_dict(cls, m: Mapping[str, Any]) -> ReferenceModel:
+        mirror = m.get("mirror")
+        return cls(
+            **{
+                **m,
+                "stop_tokens": tuple(m.get("stop_tokens", ())),
+                "mirror": (mirror["repo"], mirror["revision"]) if mirror else None,
+            }
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for k, v in vars(self).items():
+            if v is None:
+                continue
+            if k == "mirror":
+                out[k] = {"repo": v[0], "revision": v[1]}
+            else:
+                out[k] = list(v) if isinstance(v, tuple) else v
+        return out
+
+    def allows_tokenizer(self, pin: TokenizerPin) -> bool:
+        """Whether a fixture of this model may pin ``pin``: the model itself or its declared mirror."""
+        return (pin.repo, pin.revision) in {(self.repo, self.revision), *([self.mirror] if self.mirror else [])}
 
 
 @dataclass(frozen=True)
@@ -239,9 +276,7 @@ class Family:
             spec_version=d["spec_version"],
             has_reasoning=d["has_reasoning"],
             markers=tuple(d["markers"]),
-            reference_models=tuple(
-                ReferenceModel(**{**m, "stop_tokens": tuple(m.get("stop_tokens", ()))}) for m in d["reference_models"]
-            ),
+            reference_models=tuple(ReferenceModel.from_dict(m) for m in d["reference_models"]),
             format_notes=d["format_notes"],
             notes=d.get("notes"),
         )
@@ -253,10 +288,7 @@ class Family:
             "spec_version": self.spec_version,
             "has_reasoning": self.has_reasoning,
             "markers": list(self.markers),
-            "reference_models": [
-                {k: (list(v) if isinstance(v, tuple) else v) for k, v in vars(m).items() if v is not None}
-                for m in self.reference_models
-            ],
+            "reference_models": [m.to_dict() for m in self.reference_models],
             "format_notes": self.format_notes,
         }
         if self.notes is not None:
@@ -384,6 +416,9 @@ def validate(paths: Iterable[Path] | None = None) -> list[ValidationIssue]:
       * every expected tool call names one of the offered tools
       * every tool's ``parameters`` is itself a valid JSON Schema
       * ``models[0]`` is listed in the family's ``reference_models``
+      * a ``tokenizer`` pin names that reference model at its pinned revision,
+        or its declared ``mirror`` (adapters load tokenizers from the pin, so a
+        fixture must not be able to point them at an arbitrary Hub repo)
       * ``raw_output`` does not end with one of that model's stop tokens
       * ``spec_version`` major matches this package
 
@@ -466,6 +501,13 @@ def validate(paths: Iterable[Path] | None = None) -> list[ValidationIssue]:
                         ValidationIssue(f, n, f"models[0] {rec['models'][0]!r} is not a reference_model in family.json")
                     )
                 else:
+                    pin = rec.get("tokenizer")
+                    if pin and not ref.allows_tokenizer(TokenizerPin(pin["repo"], pin["revision"])):
+                        msg = (
+                            f"tokenizer {pin['repo']}@{pin['revision']} is neither {ref.repo}@{ref.revision} "
+                            "nor its mirror in family.json"
+                        )
+                        issues.append(ValidationIssue(f, n, msg))
                     for stop in ref.stop_tokens:
                         if stop and rec["raw_output"].endswith(stop):
                             msg = f"raw_output must end before the stop token {stop!r}"

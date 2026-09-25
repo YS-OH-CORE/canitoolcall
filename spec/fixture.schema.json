@@ -58,8 +58,12 @@
       "additionalProperties": false,
       "required": ["repo", "revision"],
       "properties": {
-        "repo": { "type": "string" },
-        "revision": { "type": "string", "description": "HF commit sha." },
+        "repo": {
+          "description": "The family reference model (models[0]) or its declared mirror in family.json.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Full 40-hex HF commit sha." },
         "mode": { "enum": ["hf", "mistral"], "default": "hf" }
       }
     },

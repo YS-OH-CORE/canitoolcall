@@ -24,6 +24,9 @@ EXIT_OK = 0
 EXIT_FAILURES = 1
 EXIT_ERROR = 2
 
+DEFAULT_API_KEY_ENV = "CANITOOLCALL_API_KEY"
+"""Default ``--api-key-env``: tool-specific, so an exported OPENAI_API_KEY is never sent by accident."""
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse tree (exposed for tests and docs)."""
@@ -90,15 +93,29 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--no-validate", action="store_true", help="skip validating the fixtures against the spec")
 
     pr = sub.add_parser("probe", help="check a live OpenAI-compatible endpoint")
-    pr.add_argument("--base-url", required=True, help="e.g. http://localhost:8000/v1")
-    pr.add_argument("--model", required=True)
+    pr.add_argument(
+        "--base-url",
+        required=True,
+        type=_base_url_arg,
+        help="http(s) URL of the API root, e.g. http://localhost:8000/v1",
+    )
+    pr.add_argument("--model", required=True, help="model name to send in each request")
     pr.add_argument(
         "--api-key-env",
-        default="OPENAI_API_KEY",
-        help="environment variable holding the API key (never pass keys on the command line)",
+        default=DEFAULT_API_KEY_ENV,
+        metavar="VAR",
+        help=(
+            f"environment variable holding the API key (default: {DEFAULT_API_KEY_ENV}; unset means no key). "
+            "Keys are never passed on the command line; pass --api-key-env OPENAI_API_KEY explicitly to send that key"
+        ),
+    )
+    pr.add_argument(
+        "--allow-insecure",
+        action="store_true",
+        help="allow sending an API key over plain http:// to a non-loopback host",
     )
     pr.add_argument("--no-stream", action="store_true", help="skip the streaming variants")
-    pr.add_argument("--timeout", type=float, default=60.0)
+    pr.add_argument("--timeout", type=float, default=60.0, help="per-request timeout in seconds (default 60)")
     pr.add_argument("--concurrency", type=_positive_int, default=4, help="parallel requests (default 4)")
     pr.add_argument(
         "--json",
@@ -109,14 +126,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     m = sub.add_parser("matrix", help="build the static matrix site from results files")
-    m.add_argument("--results", type=Path, default=Path("results"))
-    m.add_argument("--out", type=Path, default=Path("site/_build"))
-    m.add_argument("--templates", type=Path, default=None)
+    m.add_argument(
+        "--results",
+        type=Path,
+        default=Path("results"),
+        help="directory of <engine>-<version>.json[.gz] results files (default: results/)",
+    )
+    m.add_argument("--out", type=Path, default=Path("site/_build"), help="output directory (default: site/_build)")
+    m.add_argument(
+        "--templates", type=Path, default=None, help="Jinja template directory (default: the bundled templates)"
+    )
     m.add_argument(
         "--fixtures",
         type=Path,
         default=None,
-        help="fixture corpus for drill-down pages (default: $CANITOOLCALL_FIXTURES or the repo's fixtures/)",
+        help=(
+            "fixture corpus for drill-down pages (default: $CANITOOLCALL_FIXTURES, else the checkout's "
+            "fixtures/, else the corpus bundled with the package)"
+        ),
     )
 
     v = sub.add_parser("validate", help="validate fixtures against the spec")
@@ -139,6 +166,15 @@ def _positive_int(value: str) -> int:
     if n < 1:
         raise argparse.ArgumentTypeError("must be >= 1")
     return n
+
+
+def _base_url_arg(value: str) -> str:
+    from canitoolcall.probe import check_base_url
+
+    try:
+        return check_base_url(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
 
 
 def _env_arg(value: str) -> tuple[str, str]:
@@ -169,7 +205,22 @@ def cmd_run(args: argparse.Namespace) -> int:
             validate=not args.no_validate,
         )
         results = run(cfg)
-    except (FixtureValidationError, WorkerError, ValueError, FileNotFoundError) as e:
+    except WorkerError as e:
+        if e.unavailable:
+            from canitoolcall.adapters import PYTHON_ENV, is_adapter_spec
+
+            hint = (
+                ""
+                if is_adapter_spec(args.engine)
+                else f": run `bash scripts/engines/{args.engine}.sh` or set "
+                f"{PYTHON_ENV.format(ENGINE=args.engine.upper())} to an interpreter that has it"
+            )
+            print(f"canitoolcall run: {args.engine} is not set up{hint}", file=sys.stderr)
+            print(f"  ({str(e).strip().splitlines()[-1]})", file=sys.stderr)
+        else:
+            print(f"canitoolcall run: {e}", file=sys.stderr)
+        return EXIT_ERROR
+    except (FixtureValidationError, ValueError, FileNotFoundError) as e:
         print(f"canitoolcall run: {e}", file=sys.stderr)
         return EXIT_ERROR
     path = results.write(cfg.out_dir / results.default_filename())
@@ -185,12 +236,25 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_probe(args: argparse.Namespace) -> int:
     import os
 
-    from canitoolcall.probe import probe
+    from canitoolcall.probe import ProbeRequestError, check_reachable, insecure_key_transport, probe, safe_url
 
+    api_key = os.environ.get(args.api_key_env) or None
+    if api_key and insecure_key_transport(args.base_url) and not args.allow_insecure:
+        print(
+            f"canitoolcall probe: refusing to send the key in ${args.api_key_env} over plain http to "
+            f"{safe_url(args.base_url)}; use https, unset the variable, or pass --allow-insecure",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    try:
+        check_reachable(args.base_url, timeout_s=min(args.timeout, 10.0))
+    except ProbeRequestError as e:
+        print(f"canitoolcall probe: {e}", file=sys.stderr)
+        return EXIT_ERROR
     report = probe(
         args.base_url,
         args.model,
-        api_key=os.environ.get(args.api_key_env),
+        api_key=api_key,
         stream_modes=(False,) if args.no_stream else (False, True),
         timeout_s=args.timeout,
         concurrency=args.concurrency,
@@ -207,8 +271,11 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 
 def cmd_matrix(args: argparse.Namespace) -> int:
-    from canitoolcall.matrix import render_site
+    from canitoolcall.matrix import no_results_hint, render_site, results_files
 
+    if args.results.is_dir() and not results_files(args.results):
+        print(f"canitoolcall matrix: {no_results_hint(args.results)}", file=sys.stderr)
+        return EXIT_ERROR
     try:
         index = render_site(args.results, args.out, args.templates, fixtures_dir=args.fixtures)
     except (FileNotFoundError, ValueError) as e:
@@ -235,12 +302,15 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_engines(args: argparse.Namespace) -> int:
-    from canitoolcall.adapters import ENGINES, adapter_class, engine_python
-    from canitoolcall.fixtures import repo_root
+    from canitoolcall.adapters import ENGINES, adapter_class, engine_setup
 
+    print(f"{'ENGINE':13} {'STATUS':13} {'PINNED':42} PYTHON")
     for name in sorted(ENGINES):
         cls = adapter_class(name)
-        print(f"{name:13} pinned={cls.pinned_version:42} python={engine_python(name, repo_root())}")
+        setup = engine_setup(name)
+        status = "ready" if setup.configured else "not set up"
+        python = str(setup.python) if setup.configured else f"(run scripts/engines/{name}.sh)"
+        print(f"{name:13} {status:13} {cls.pinned_version:42} {python}")
     return EXIT_OK
 
 

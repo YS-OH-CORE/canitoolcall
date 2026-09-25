@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from canitoolcall.cli import EXIT_OK, main
+from canitoolcall.cli import EXIT_ERROR, EXIT_OK, main
 from canitoolcall.fixtures import fixtures_digest, load_fixtures
 from canitoolcall.matrix import (
     Matrix,
@@ -341,10 +341,10 @@ def test_digest_match_is_reported(tmp_path: Path, sample_fixtures_dir: Path) -> 
 
 def test_render_without_corpus_and_escapes(tmp_path: Path) -> None:
     evil = CaseResult(
-        "qwen3-hermes/<script>alert(1)</script>",
+        "qwen3-hermes/x",
         "qwen3-hermes",
         Status.FAIL,
-        (_check("no_leakage", "nonstream", Status.FAIL, "<tool_call> leaked"),),
+        (_check("no_leakage", "nonstream", Status.FAIL, "<script>alert(1)</script><tool_call> leaked"),),
     )
     results = _write(tmp_path, [_run(version="1.0+cpu/x", cases=(evil,))])
     out = tmp_path / "site"
@@ -354,7 +354,8 @@ def test_render_without_corpus_and_escapes(tmp_path: Path) -> None:
     text = page.read_text(encoding="utf-8")
     assert "<script>" not in text
     assert "&lt;tool_call&gt; leaked" in text
-    assert "fixture corpus not found" in text
+    assert "fixture corpus &#39;nowhere&#39; not found" in text
+    assert str(tmp_path) not in text  # no absolute local paths in published pages
     assert "does not include the observed parses" in text
     _parse(page)
 
@@ -366,6 +367,43 @@ def test_render_empty_results(tmp_path: Path) -> None:
     text = index.read_text(encoding="utf-8")
     assert "No results yet" in text
     _assert_accessible(_parse(index))
+
+
+def test_results_schema_rejects_unsafe_fixture_ids(tmp_path: Path) -> None:
+    bad = CaseResult("qwen3-hermes/$(touch x)", "qwen3-hermes", Status.FAIL, ())
+    results = _write(tmp_path, [_run(cases=(bad,))])
+    with pytest.raises(ValueError, match="fixture_id"):
+        render_site(results, tmp_path / "site")
+
+
+def test_cli_matrix_empty_results_dir_hints_at_snapshots(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    results = tmp_path / "results"
+    _write(results / "x", _sample_runs()).rename(results / "2026-01-01")
+    (results / "x").rmdir()
+    assert main(["matrix", "--results", str(results), "--out", str(tmp_path / "o")]) == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "no results files" in err and "2026-01-01" in err
+
+
+def test_repro_command_quotes_untrusted_values() -> None:
+    case = CaseResult(
+        "qwen3-hermes/a", "qwen3-hermes", Status.FAIL, (_check("expected_match", "rand:1:8", Status.FAIL),)
+    )
+    cmd = repro_command(case, "vllm; rm -rf ~", "fixtures/q h/x.jsonl")
+    assert "'vllm; rm -rf ~'" in cmd and "'fixtures/q h/x.jsonl'" in cmd
+    # One-token-per-step engines never fall back to the multi-token "one" strategy.
+    ok = CaseResult(
+        "qwen3-hermes/a", "qwen3-hermes", Status.FAIL, (_check("expected_match", "nonstream", Status.FAIL),)
+    )
+    assert "--strategy token" in repro_command(ok, "ollama", None, ("one", "special"))
+
+
+def test_non_http_provenance_url_is_not_a_link(tmp_path: Path) -> None:
+    from canitoolcall.matrix import _http_url
+
+    assert _http_url("javascript:alert(document.domain)") is None
+    assert _http_url("https://github.com/x") == "https://github.com/x"
+    assert _http_url("http:no-host") is None
 
 
 def test_cli_matrix(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -381,3 +419,21 @@ def test_missing_templates(tmp_path: Path) -> None:
 
 def test_matrix_cell_lookup_on_empty() -> None:
     assert Matrix((), (), ()).cell("x", "vllm", "1") is None
+
+
+def test_run_synthetic_strategies_do_not_count(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from canitoolcall.matrix import build_cell
+
+    checks = (*_passing_checks(("nonstream", "token")), _check("expected_match", "one", Status.FAIL, "lost"))
+    case = CaseResult(SAMPLE_ID, "qwen3-hermes", Status.PASS, checks)
+    one_token = _run("ollama", "7af39318", cases=(case,))
+    one_token = replace(one_token, run=replace(one_token.run, synthetic_strategies=("one",)))
+    cell = build_cell("qwen3-hermes", one_token)
+    assert cell.status is Status.PASS and cell.stress_failures == 1
+    assert cell.multi_token_synthetic == ("one",)
+    assert case_status(case, ("one",)) is Status.PASS
+    page = render_site(_write(tmp_path, [one_token]), tmp_path / "site")
+    cell_page = (page.parent / cell_path("ollama", "7af39318", "qwen3-hermes")).read_text(encoding="utf-8")
+    assert "streams one token per event" in cell_page

@@ -17,8 +17,10 @@ optionally, to show a failing fixture's raw output and expected parse next
 to what the engine produced; whether the corpus still matches the run's
 ``fixtures_digest`` is stated on the page.
 
-Only realistic chunking strategies count toward a status. Opt-in stress
-strategies (``char:<seed>``) are reported separately (see docs/DESIGN.md).
+Only realistic chunking strategies count toward a status. Synthetic
+strategies are reported separately (see docs/DESIGN.md): ``char:<seed>``
+always, and multi-token strategies for engines that stream one token per event
+(``run.synthetic_strategies`` in the results file).
 """
 
 from __future__ import annotations
@@ -26,12 +28,14 @@ from __future__ import annotations
 import difflib
 import json
 import re
+import shlex
 import shutil
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from canitoolcall import __version__
 from canitoolcall.chunking import ChunkStrategy
@@ -85,27 +89,30 @@ STATUS_ICONS: dict[str, str] = {
 # --------------------------------------------------------------------------- aggregation
 
 
-def is_realistic(strategy: str) -> bool:
-    """True for ``nonstream`` and every strategy engines can actually produce.
+def is_realistic(strategy: str, synthetic: Collection[str] = ()) -> bool:
+    """True for ``nonstream`` and every strategy the engine can actually produce.
 
-    Unknown ids are treated as realistic, so they are never silently hidden.
+    ``synthetic`` is the run's ``synthetic_strategies``. Unknown ids are
+    treated as realistic, so they are never silently hidden.
     """
-    if strategy == "nonstream":
+    if strategy in ("nonstream", "*"):
         return True
+    if strategy in synthetic:
+        return False
     try:
         return ChunkStrategy.parse(strategy).realistic
     except ValueError:
         return True
 
 
-def case_status(case: CaseResult) -> Status:
+def case_status(case: CaseResult, synthetic: Collection[str] = ()) -> Status:
     """A case's matrix status: its status over realistic strategies only.
 
-    It equals ``case.status`` unless the run included stress strategies.
+    It equals ``case.status`` unless the run included synthetic strategies.
     """
     if case.status is Status.UNSUPPORTED:
         return Status.UNSUPPORTED
-    realistic = [c for c in case.checks if is_realistic(c.strategy)]
+    realistic = [c for c in case.checks if is_realistic(c.strategy, synthetic)]
     if len(realistic) == len(case.checks):
         return case.status
     statuses = [c.status for c in realistic if c.status is not Status.UNSUPPORTED]
@@ -136,7 +143,7 @@ class CheckStats:
         return self.counts[Status.PASS.value] / self.applied if self.applied else None
 
 
-def check_stats(cases: Iterable[CaseResult]) -> tuple[CheckStats, ...]:
+def check_stats(cases: Iterable[CaseResult], synthetic: Collection[str] = ()) -> tuple[CheckStats, ...]:
     """Per-check counts over supported cases; checks that never applied are omitted."""
     counts: dict[str, dict[str, int]] = {}
     for case in cases:
@@ -144,7 +151,7 @@ def check_stats(cases: Iterable[CaseResult]) -> tuple[CheckStats, ...]:
             continue
         per_check: dict[str, list[Status]] = {}
         for c in case.checks:
-            if is_realistic(c.strategy):
+            if is_realistic(c.strategy, synthetic):
                 per_check.setdefault(c.check, []).append(c.status)
         for name, statuses in per_check.items():
             counted = [s for s in statuses if s is not Status.UNSUPPORTED]
@@ -169,7 +176,9 @@ class Cell:
     cases: tuple[CaseResult, ...] = ()
     checks: tuple[CheckStats, ...] = ()
     stress_failures: int = 0
-    """Cases whose opt-in stress strategies (``char:*``) failed; never part of ``status``."""
+    """Cases whose synthetic strategies failed; never part of ``status``."""
+    synthetic: tuple[str, ...] = ()
+    """The run's synthetic strategies (never counted)."""
 
     @property
     def supported(self) -> int:
@@ -181,6 +190,11 @@ class Cell:
         return self.counts[Status.PASS.value] / self.supported if self.supported else None
 
     @property
+    def multi_token_synthetic(self) -> tuple[str, ...]:
+        """Synthetic strategies other than ``char:*`` (multi-token deltas the engine never sends)."""
+        return tuple(s for s in self.synthetic if not s.startswith("char:"))
+
+    @property
     def weak_checks(self) -> tuple[CheckStats, ...]:
         """Checks that did not strictly pass on every applicable case."""
         return tuple(c for c in self.checks if c.counts[Status.PASS.value] < c.applied)
@@ -189,14 +203,15 @@ class Cell:
 def build_cell(family: str, run: RunResults) -> Cell:
     """Aggregate one family's cases of one run."""
     cases = tuple(c for c in run.cases if c.family == family)
+    syn = run.run.synthetic_strategies
     counts = _empty_counts()
     for case in cases:
-        counts[case_status(case).value] += 1
-    supported = [case_status(c) for c in cases if case_status(c) is not Status.UNSUPPORTED]
+        counts[case_status(case, syn).value] += 1
+    supported = [case_status(c, syn) for c in cases if case_status(c, syn) is not Status.UNSUPPORTED]
     stress = sum(
         1
         for c in cases
-        if any(not is_realistic(k.strategy) and k.status in (Status.FAIL, Status.ERROR) for k in c.checks)
+        if any(not is_realistic(k.strategy, syn) and k.status in (Status.FAIL, Status.ERROR) for k in c.checks)
     )
     return Cell(
         family=family,
@@ -206,8 +221,9 @@ def build_cell(family: str, run: RunResults) -> Cell:
         status=worst_status(supported) if supported else Status.UNSUPPORTED,
         run_at=run.run.finished_at,
         cases=cases,
-        checks=check_stats(cases),
+        checks=check_stats(cases, syn),
         stress_failures=stress,
+        synthetic=tuple(syn),
     )
 
 
@@ -267,6 +283,13 @@ def results_files(results_dir: Path) -> list[Path]:
     if not results_dir.is_dir():
         return []
     return sorted([*results_dir.glob("*.json"), *results_dir.glob("*.json.gz")], key=lambda p: p.name)
+
+
+def no_results_hint(results_dir: Path) -> str:
+    """Why ``results_dir`` has nothing to render, with the likely fix."""
+    dated = sorted(p for p in results_dir.iterdir() if p.is_dir() and results_files(p)) if results_dir.is_dir() else []
+    hint = f"; did you mean --results {dated[-1]}?" if dated else "; run `canitoolcall run --engine ...` first"
+    return f"no results files (*.json, *.json.gz) in {results_dir}{hint}"
 
 
 def read_results_text(path: Path) -> str:
@@ -338,7 +361,10 @@ class FixtureContext:
     raw_output: str
     expected_json: str | None
     expected_error: str | None
-    provenance_url: str
+    provenance_url: str | None
+    """Link target: set only for http(s) URLs."""
+    provenance_text: str
+    """The source URL as recorded, shown as text."""
     provenance_kind: str
     record_jsonl: str
     tags: tuple[str, ...]
@@ -369,7 +395,7 @@ def _observed_view(result: ParseResult) -> dict[str, Any]:
     calls: list[dict[str, Any]] = []
     for tc in result.tool_calls:
         try:
-            args: Any = json.loads(tc.arguments_raw)
+            args: Any = tc.arguments()
         except json.JSONDecodeError:
             args = {"<arguments_raw, not valid JSON>": tc.arguments_raw}
         calls.append({"name": tc.name, "arguments": args})
@@ -452,20 +478,33 @@ def _rel_source(fx: Fixture, fixtures_dir: Path | None) -> str | None:
     return fx.source.as_posix()
 
 
-def repro_command(case: CaseResult, engine: str, source: str | None) -> str:
-    """A minimal command that replays just this fixture's file with the failing strategies."""
+def repro_command(case: CaseResult, engine: str, source: str | None, synthetic: Collection[str] = ()) -> str:
+    """A minimal command that replays just this fixture (``--id``) with the failing strategies.
+
+    Every interpolated value is shell-quoted: results files are untrusted input.
+    """
     strategies = sorted(
         {
             c.strategy
             for c in case.checks
             if c.status in (Status.FAIL, Status.ERROR, Status.SOFT_PASS)
             and c.strategy not in ("nonstream", "*")  # "*" is split_invariance's summary row
-            and is_realistic(c.strategy)
+            and is_realistic(c.strategy, synthetic)
         }
-    ) or ["one"]
-    target = f"--fixtures {source}" if source else f"--family {case.family}"
-    flags = " ".join(f"--strategy {s}" for s in strategies)
-    return f"uv run canitoolcall run --engine {engine} {target} --id {case.fixture_id} {flags} --observed all"
+    ) or ["token" if "one" in synthetic else "one"]
+    q = shlex.quote
+    target = f"--fixtures {q(source)}" if source else f"--family {q(case.family)}"
+    flags = " ".join(f"--strategy {q(s)}" for s in strategies)
+    return f"uv run canitoolcall run --engine {q(engine)} {target} --id {q(case.fixture_id)} {flags} --observed all"
+
+
+def _http_url(url: str) -> str | None:
+    """``url`` if it is an absolute http(s) URL, else None (never render javascript: etc. as a link)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    return url if parts.scheme in ("http", "https") and parts.netloc else None
 
 
 def _fixture_context(fx: Fixture, fixtures_dir: Path | None) -> FixtureContext:
@@ -477,7 +516,8 @@ def _fixture_context(fx: Fixture, fixtures_dir: Path | None) -> FixtureContext:
         raw_output=fx.raw_output,
         expected_json=_pretty(expected) if expected is not None else None,
         expected_error=f"{err.reason} (accept: {', '.join(err.accept)})" if err is not None else None,
-        provenance_url=fx.provenance.source_url,
+        provenance_url=_http_url(fx.provenance.source_url),
+        provenance_text=fx.provenance.source_url,
         provenance_kind=fx.provenance.kind,
         record_jsonl=json.dumps(fx.to_dict(), ensure_ascii=False),
         tags=fx.tags,
@@ -498,21 +538,27 @@ def anchor_for(fixture_id: str) -> str:
     return "f-" + re.sub(r"[^A-Za-z0-9_-]", "-", fixture_id)
 
 
-def case_view(case: CaseResult, engine: str, fixtures: Mapping[str, Fixture], fixtures_dir: Path | None) -> CaseView:
+def case_view(
+    case: CaseResult,
+    engine: str,
+    fixtures: Mapping[str, Fixture],
+    fixtures_dir: Path | None,
+    synthetic: Collection[str] = (),
+) -> CaseView:
     fx = fixtures.get(case.fixture_id)
     source = _rel_source(fx, fixtures_dir) if fx is not None else None
     return CaseView(
         fixture_id=case.fixture_id,
         anchor=anchor_for(case.fixture_id),
-        status=case_status(case),
-        failing=tuple(c for c in case.checks if is_realistic(c.strategy) and c.status is not Status.PASS),
-        stress=tuple(c for c in case.checks if not is_realistic(c.strategy) and c.status is not Status.PASS),
+        status=case_status(case, synthetic),
+        failing=tuple(c for c in case.checks if is_realistic(c.strategy, synthetic) and c.status is not Status.PASS),
+        stress=tuple(c for c in case.checks if not is_realistic(c.strategy, synthetic) and c.status is not Status.PASS),
         outcomes=_outcomes(case, fx),
         parser_config_json=_pretty(dict(case.parser_config)) if case.parser_config is not None else None,
         harness_error=case.harness_error,
         reason=case.reason,
         skipped=dict(case.skipped_strategies),
-        repro=repro_command(case, engine, source),
+        repro=repro_command(case, engine, source, synthetic),
         fixture=_fixture_context(fx, fixtures_dir) if fx is not None else None,
     )
 
@@ -561,13 +607,17 @@ class _Corpus:
 
 def _load_corpus(fixtures_dir: Path | None) -> _Corpus:
     root = fixtures_dir if fixtures_dir is not None else default_fixtures_dir()
+    # Notes are published: name the corpus directory only, never an absolute local path.
     if not root.is_dir():
-        return _Corpus(note=f"fixture corpus not found at {root}; raw outputs are not shown")
+        return _Corpus(note=f"fixture corpus {root.name!r} not found; raw outputs are not shown")
     try:
         fixtures = {f.id: f for f in load_fixtures([root])}
         families = load_families(root)
     except (OSError, ValueError, KeyError, TypeError) as e:
-        return _Corpus(root=root, note=f"could not read the fixture corpus ({e}); raw outputs are not shown")
+        detail = type(e).__name__ if isinstance(e, OSError) else str(e).replace(str(root.resolve()), root.name)
+        return _Corpus(
+            root=root, note=f"could not read the fixture corpus {root.name!r} ({detail}); raw outputs are not shown"
+        )
     return _Corpus(fixtures=fixtures, families=families, root=root)
 
 
@@ -673,7 +723,10 @@ def render_site(
     (out_dir / "matrix.json").write_text(_pretty(matrix_json(matrix)) + "\n", encoding="utf-8")
 
     family_names = {slug: fam.name for slug, fam in corpus.families.items()}
-    engine_checks = {(r.engine.name, r.engine.version): {k.check: k for k in check_stats(r.cases)} for r in matrix.runs}
+    engine_checks = {
+        (r.engine.name, r.engine.version): {k.check: k for k in check_stats(r.cases, r.run.synthetic_strategies)}
+        for r in matrix.runs
+    }
     all_checks = [c for c in CHECKS if any(c in m for m in engine_checks.values())]
     latest = max((r.run.finished_at for r in matrix.runs), key=_parse_time, default=None)
     common = {
@@ -701,10 +754,11 @@ def render_site(
     for cell in matrix.cells:
         cell_run = matrix.run_for(cell.engine, cell.engine_version)
         assert cell_run is not None
+        syn = cell_run.run.synthetic_strategies
         views = [
-            case_view(c, cell.engine, corpus.fixtures, corpus.root)
+            case_view(c, cell.engine, corpus.fixtures, corpus.root, syn)
             for c in cell.cases
-            if case_status(c) is not Status.PASS or any(k.status is not Status.PASS for k in c.checks)
+            if case_status(c, syn) is not Status.PASS or any(k.status is not Status.PASS for k in c.checks)
         ]
         order = {Status.FAIL: 0, Status.ERROR: 1, Status.SOFT_PASS: 2, Status.UNSUPPORTED: 3, Status.PASS: 4}
         views.sort(key=lambda v: (order[v.status], v.fixture_id))

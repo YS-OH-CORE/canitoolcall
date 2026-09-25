@@ -166,3 +166,29 @@ def test_run_rejects_invalid_fixtures(
     assert main(base) == EXIT_ERROR
     assert "missing family.json" in capsys.readouterr().err
     assert main([*base, "--no-validate"]) == EXIT_OK
+
+
+def test_engines_shows_setup_status(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import canitoolcall.adapters as adapters
+
+    monkeypatch.setattr("canitoolcall.fixtures.repo_root", lambda: tmp_path)
+    monkeypatch.setenv("CANITOOLCALL_VLLM_PYTHON", sys.executable)
+    for engine in adapters.ENGINES:
+        if engine != "vllm":
+            monkeypatch.delenv(f"CANITOOLCALL_{engine.upper()}_PYTHON", raising=False)
+    assert main(["engines"]) == EXIT_OK
+    lines = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()[1:]}
+    assert "ready" in lines["vllm"] and sys.executable in lines["vllm"]
+    assert "not set up" in lines["sglang"] and "scripts/engines/sglang.sh" in lines["sglang"]
+
+
+def test_run_unset_engine_is_one_line(
+    tmp_path: Path, corpus: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "no-venv" / "bin" / "python"
+    rc = main(["run", "--engine", "vllm", "--fixtures", str(corpus), "--python", str(missing), "--out", str(tmp_path)])
+    assert rc == EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "vllm is not set up" in err and "scripts/engines/vllm.sh" in err and "Traceback" not in err

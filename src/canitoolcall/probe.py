@@ -14,12 +14,16 @@ stream == non-stream shape, no marker leakage) rather than exact-text.
 
 Uses only the standard library HTTP client (``urllib``) so it runs anywhere;
 SSE is parsed by hand. The API key is sent only in the ``Authorization``
-header: it is never logged, written to reports, or echoed in error details.
+header, only to ``--base-url``: redirects are never followed (urllib would
+resend the header to the new host), and the key is never logged, written to
+reports, or echoed in error details.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -427,6 +431,71 @@ def _endpoint(base_url: str) -> str:
     return base_url.rstrip("/") + "/chat/completions"
 
 
+def check_base_url(url: str) -> str:
+    """Validate ``--base-url``: an ``http(s)://host[:port]/path`` URL without
+    userinfo, query or fragment. Returns it unchanged; raises ``ValueError``.
+    """
+    try:
+        p = urllib.parse.urlsplit(url)
+        port = p.port  # raises ValueError for a bad port
+    except ValueError as e:
+        raise ValueError(f"invalid URL {url!r}: {e}") from None
+    del port
+    if p.scheme not in ("http", "https"):
+        raise ValueError(f"base URL must start with http:// or https:// (got {safe_url(url) or url!r})")
+    if not p.hostname:
+        raise ValueError("base URL has no host")
+    if p.username is not None or p.password is not None:
+        raise ValueError("base URL must not contain user:password@; pass the key with --api-key-env")
+    if p.query or p.fragment:
+        raise ValueError("base URL must not contain a query or fragment")
+    return url
+
+
+def is_loopback(url: str) -> bool:
+    """True if ``url``'s host is ``localhost`` or a loopback IP address."""
+    host = (urllib.parse.urlsplit(url).hostname or "").rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def insecure_key_transport(url: str) -> bool:
+    """True if a key sent to ``url`` would cross the network in cleartext (http, not loopback)."""
+    return urllib.parse.urlsplit(url).scheme == "http" and not is_loopback(url)
+
+
+def check_reachable(base_url: str, timeout_s: float = 10.0) -> None:
+    """Open (and close) a TCP connection to the endpoint's host; sends nothing.
+
+    Raises :class:`ProbeRequestError` with one readable line if it cannot connect.
+    """
+    p = urllib.parse.urlsplit(base_url)
+    port = p.port or (443 if p.scheme == "https" else 80)
+    try:
+        with socket.create_connection((p.hostname or "", port), timeout=timeout_s):
+            pass
+    except OSError as e:
+        raise ProbeRequestError(f"cannot reach {safe_url(base_url)}: {e.strerror or e}") from None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: urllib's default handler resends ``Authorization`` to any host."""
+
+    def redirect_request(
+        self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> urllib.request.Request | None:
+        raise ProbeRequestError(
+            f"HTTP {code} redirect to {safe_url(newurl)} not followed (point --base-url at the final URL)"
+        )
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def safe_url(url: str) -> str:
     """``url`` without userinfo, query or fragment (they may carry credentials)."""
     p = urllib.parse.urlsplit(url)
@@ -437,8 +506,16 @@ def safe_url(url: str) -> str:
     return urllib.parse.urlunsplit((p.scheme, netloc, p.path, "", ""))
 
 
+_MIN_REDACT = 8
+"""Shorter keys are not redacted: replacing a 1-3 character string mangles messages."""
+
+
 def _redact(text: str, secret: str | None) -> str:
-    return text.replace(secret, "***") if secret else text
+    if not secret or len(secret) < _MIN_REDACT:
+        return text
+    for form in dict.fromkeys((secret, urllib.parse.quote(secret, safe=""), urllib.parse.quote_plus(secret))):
+        text = text.replace(form, "***")
+    return text
 
 
 def _text(value: Any) -> str | None:
@@ -609,10 +686,10 @@ def chat_response(
     headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if stream else "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(_endpoint(base_url), data=body, headers=headers, method="POST")
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        req = urllib.request.Request(_endpoint(base_url), data=body, headers=headers, method="POST")
+        with _OPENER.open(req, timeout=timeout_s) as resp:
             ctype = resp.headers.get("Content-Type", "")
             if stream and "text/event-stream" in ctype:
                 acc = _Accumulator()
@@ -634,6 +711,8 @@ def chat_response(
         raise ProbeRequestError(_redact(f"request failed: {e}", api_key)) from None
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise ProbeRequestError(f"unreadable response: {e}") from None
+    except ValueError as e:  # e.g. "unknown url type" from Request()
+        raise ProbeRequestError(_redact(f"invalid request URL: {e}", api_key)) from None
 
 
 def chat(
@@ -696,7 +775,7 @@ def evaluate(
         try:
             args = call.arguments()
         except json.JSONDecodeError:
-            problems.append(f"call {i} ({call.name}) arguments are not valid JSON: {call.arguments_raw[:80]!r}")
+            problems.append(f"call {i} ({call.name}) arguments are not valid JSON: {(call.arguments_raw or '')[:80]!r}")
             continue
         if not isinstance(args, dict):
             problems.append(f"call {i} ({call.name}) arguments are {type(args).__name__}, not a JSON object")
@@ -709,7 +788,11 @@ def evaluate(
     problems += _find_leaks("reasoning_content", [result.reasoning_content or ""], markers)
     problems += _find_leaks("a tool name", names, markers)
     problems += _find_leaks("tool arguments", [s for _, a in decoded for s in _strings(a)], markers)
-    all_text = [result.content or "", result.reasoning_content or "", *(c.arguments_raw for c in result.tool_calls)]
+    all_text = [
+        result.content or "",
+        result.reasoning_content or "",
+        *(c.arguments_raw or "" for c in result.tool_calls),
+    ]
     if any("�" in t for t in all_text):
         problems.append("U+FFFD replacement character in output (broken UTF-8 decoding)")
 

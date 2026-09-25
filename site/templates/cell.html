@@ -23,7 +23,7 @@
   <dt>Engine</dt><dd>{{ run.engine.name }} {{ run.engine.version }}{% if run.engine.commit %} (<code>{{ run.engine.commit }}</code>){% endif %}</dd>
   <dt>Run</dt><dd><time datetime="{{ run.run.started_at }}">{{ run.run.started_at }}</time> to <time datetime="{{ run.run.finished_at }}">{{ run.run.finished_at }}</time></dd>
   <dt>Platform</dt><dd>{{ run.run.platform }}, Python {{ run.run.python }}, canitoolcall {{ run.canitoolcall_version }}</dd>
-  <dt>Strategies</dt><dd>{{ run.run.strategies|join(", ") }} (normalization <code>{{ run.run.normalization }}</code>)</dd>
+  <dt>Strategies</dt><dd>{{ run.run.strategies|join(", ") }} (normalization <code>{{ run.run.normalization }}</code>){% if run.run.synthetic_strategies %}; not counted for this engine: {{ run.run.synthetic_strategies|join(", ") }}{% endif %}</dd>
   <dt>Fixtures digest</dt><dd><code>{{ run.run.fixtures_digest }}</code>
     {% if have_corpus %}
       {% if digest_matches %}<span class="ok-note">the fixture corpus used for this site matches the run</span>
@@ -74,8 +74,8 @@
 </ul>
 {% endif %}
 {% if cell.stress_failures %}
-<p class="stress">{{ cell.stress_failures }} fixture(s) failed an opt-in stress strategy (<code>char:*</code>, which can split
-special tokens). These are listed below but never count toward the status.</p>
+<p class="stress">{{ cell.stress_failures }} fixture(s) failed only a synthetic strategy: <code>char:*</code> (which can split
+special tokens){% if cell.multi_token_synthetic %}, or a multi-token strategy this engine never produces because its server streams one token per event ({% for s in cell.multi_token_synthetic %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}. These are listed below but never count toward the status.</p>
 {% endif %}
 </section>
 
@@ -106,7 +106,7 @@ special tokens). These are listed below but never count toward the status.</p>
     </table>
     {% endif %}
     {% if v.stress %}
-    <p class="stress">Stress strategies (not counted): {% for c in v.stress %}<code>{{ c.check }}@{{ c.strategy }}</code> {{ c.status|label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    <p class="stress">Synthetic strategies (not counted): {% for c in v.stress %}<code>{{ c.check }}@{{ c.strategy }}</code> {{ c.status|label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
     {% endif %}
     {% if v.skipped %}
     <p class="muted">Skipped strategies: {% for s, r in v.skipped.items() %}<code>{{ s }}</code> ({{ r }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
@@ -142,7 +142,7 @@ special tokens). These are listed below but never count toward the status.</p>
 
     {% if v.fixture %}
     <h3>Fixture</h3>
-    <p>Provenance: {{ v.fixture.provenance_kind }}, <a href="{{ v.fixture.provenance_url }}" rel="noopener">{{ v.fixture.provenance_url }}</a>.
+    <p>Provenance: {{ v.fixture.provenance_kind }}, {% if v.fixture.provenance_url %}<a href="{{ v.fixture.provenance_url }}" rel="noopener">{{ v.fixture.provenance_url }}</a>{% else %}<code>{{ v.fixture.provenance_text }}</code>{% endif %}.
     Tags: {% for t in v.fixture.tags %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}.</p>
     {% if v.fixture.expected_error %}<p>Expected graceful failure: {{ v.fixture.expected_error }}.</p>{% endif %}
     <h4>Raw output</h4>

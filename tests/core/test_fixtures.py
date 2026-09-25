@@ -81,6 +81,10 @@ def _copy_family(tmp_path: Path, sample_fixtures_dir: Path, mutate) -> Path:  # 
         (lambda r: r.update(models=["Qwen/Qwen3-8B"]), "is not a reference_model"),
         (lambda r: r.update(raw_output=r["raw_output"] + "<|im_end|>"), "before the stop token"),
         (lambda r: r.update(spec_version="1.0"), "spec_version"),
+        # A fixture must not point adapters at an arbitrary Hub repo (code execution via remote code).
+        (lambda r: r["tokenizer"].update(repo="attacker/looks-like-qwen"), "nor its mirror"),
+        (lambda r: r["tokenizer"].update(revision="main"), "does not match"),
+        (lambda r: r["tokenizer"].update(revision="0" * 40), "nor its mirror"),
     ],
 )
 def test_validate_rejects(tmp_path: Path, sample_fixtures_dir: Path, mutate, needle: str) -> None:  # type: ignore[no-untyped-def]
@@ -133,3 +137,22 @@ def test_load_reports_malformed_records(tmp_path: Path) -> None:
     (d / "x.jsonl").write_text("{oops\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"x\.jsonl:1: invalid JSON"):
         load_fixtures([tmp_path])
+
+
+def test_validate_rejects_branch_revisions_in_family(tmp_path: Path, sample_fixtures_dir: Path) -> None:
+    root = _copy_family(tmp_path, sample_fixtures_dir, lambda r: None)
+    fam_file = root / "qwen3-hermes" / "family.json"
+    fam = json.loads(fam_file.read_text(encoding="utf-8"))
+    fam["reference_models"][0]["revision"] = "main"
+    fam_file.write_text(json.dumps(fam), encoding="utf-8")
+    assert any("revision" in str(i) and "does not match" in str(i) for i in validate([root]))
+
+
+def test_remote_code_only_for_reviewed_pins() -> None:
+    from canitoolcall.adapters.base import REMOTE_CODE_ALLOWLIST, trusts_remote_code
+
+    repo, rev = next(iter(REMOTE_CODE_ALLOWLIST))
+    assert trusts_remote_code(repo, rev)
+    assert not trusts_remote_code(repo, "main")
+    assert not trusts_remote_code("attacker/looks-like-kimi", rev)
+    assert not trusts_remote_code(repo, None)

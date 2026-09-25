@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
+from urllib.parse import quote
 
 import jsonschema
 import pytest
@@ -18,9 +21,12 @@ from canitoolcall.probe import (
     ProbeOutcome,
     ProbeReport,
     Scenario,
+    _redact,
     chat,
+    check_base_url,
     compare_modes,
     evaluate,
+    insecure_key_transport,
     iter_sse_data,
     probe,
     safe_url,
@@ -369,3 +375,98 @@ def test_compare_modes_is_structural() -> None:
 def test_leak_markers_are_unique_and_non_trivial() -> None:
     assert len(LEAK_MARKERS) == len(set(LEAK_MARKERS))
     assert all(len(m) >= 3 for m in LEAK_MARKERS)
+
+
+# --------------------------------------------------------------------------- transport safety
+
+
+class _Recorder(BaseHTTPRequestHandler):
+    seen: ClassVar[list[str | None]] = []
+
+    def do_POST(self) -> None:
+        type(self).seen.append(self.headers.get("Authorization"))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"choices": []}')
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+def _serve(handler: type[BaseHTTPRequestHandler]) -> tuple[ThreadingHTTPServer, str]:
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def test_redirects_are_not_followed_so_the_key_stays_put() -> None:
+    other, other_url = _serve(_Recorder)
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header("Location", f"{other_url.replace('127.0.0.1', 'localhost')}/v1/chat/completions?k=1")
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    first, first_url = _serve(Redirect)
+    try:
+        report = probe(f"{first_url}/v1", "m", api_key=SECRET, scenarios=BUILTIN_SCENARIOS[:1], stream_modes=(False,))
+        o = outcome(report, BUILTIN_SCENARIOS[0].id, stream=False)
+        assert o.status == "error" and "redirect" in (o.detail or "") and "not followed" in (o.detail or "")
+        assert "k=1" not in (o.detail or "")  # the Location is shown without its query
+        assert _Recorder.seen == []  # the second server never got a request, let alone the key
+    finally:
+        first.shutdown()
+        other.shutdown()
+
+
+def test_redact_skips_tiny_keys_and_catches_url_encoding() -> None:
+    assert _redact("not known", "k") == "not known"
+    key = "sk-a/b+c=0123456789"
+    assert _redact(f"x {key} y {quote(key, safe='')}", key) == "x *** y ***"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["notaurl", "ftp://host/v1", "http://user:pw@host/v1", "http:///v1", "http://host/v1?key=1", "http://h:99999/"],
+)
+def test_check_base_url_rejects(url: str) -> None:
+    with pytest.raises(ValueError):
+        check_base_url(url)
+
+
+def test_insecure_key_transport() -> None:
+    assert insecure_key_transport("http://10.0.0.5:8000/v1")
+    assert not insecure_key_transport("http://localhost:8000/v1")
+    assert not insecure_key_transport("http://127.0.0.1:8000/v1")
+    assert not insecure_key_transport("http://[::1]:8000/v1")
+    assert not insecure_key_transport("https://api.example.com/v1")
+
+
+def test_cli_probe_usage_errors_exit_2(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SystemExit) as e:
+        cli.main(["probe", "--base-url", "notaurl", "--model", "x"])
+    assert e.value.code == cli.EXIT_ERROR
+    # A key would cross the network in cleartext: refused unless --allow-insecure.
+    monkeypatch.setenv("CANITOOLCALL_API_KEY", SECRET)
+    assert cli.main(["probe", "--base-url", "http://10.255.255.1:8000/v1", "--model", "x"]) == cli.EXIT_ERROR
+    err = capsys.readouterr().err
+    assert "refusing" in err and SECRET not in err
+    # An unreachable server is one line and exit 2, not 16 identical errors.
+    monkeypatch.delenv("CANITOOLCALL_API_KEY")
+    assert cli.main(["probe", "--base-url", "http://127.0.0.1:9/v1", "--model", "x", "--timeout", "2"]) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "cannot reach http://127.0.0.1:9/v1" in err
+
+
+def test_cli_probe_does_not_read_openai_api_key_by_default(
+    mock_openai: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+    monkeypatch.delenv("CANITOOLCALL_API_KEY", raising=False)
+    cli.main(["probe", "--base-url", mock_openai.base_url, "--model", "m", "--no-stream"])
+    assert {h.get("Authorization") for h, _ in mock_openai.requests} == {None}

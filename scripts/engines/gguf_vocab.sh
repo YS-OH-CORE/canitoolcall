@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,8 +62,15 @@ ALLOW = [
     "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "added_tokens.json",
     "tokenizer.model", "*.tiktoken", "tiktoken.model", "vocab.json", "merges.txt", "vocab.txt",
     "tekken.json", "chat_template.jinja", "chat_template.json", "*.jinja",
-    "tokenization_*.py", "configuration_*.py",
 ]
+# The converter loads tokenizers with trust_remote_code=True. Repo code is only
+# downloaded for the reviewed pins in canitoolcall.adapters.base.REMOTE_CODE_ALLOWLIST,
+# so a fixture or family.json cannot make this script run code from an arbitrary repo.
+REMOTE_CODE = ["tokenization_*.py", "configuration_*.py"]
+sys.path.insert(0, str(root / "src"))
+from canitoolcall.adapters.base import trusts_remote_code  # noqa: E402
+
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _set_add_bos_token(model_dir: Path) -> None:
@@ -142,7 +150,10 @@ def build(repo: str, revision: str, llama_commit: str) -> bool:
     from huggingface_hub import snapshot_download
 
     try:
-        snap = Path(snapshot_download(repo, revision=revision, allow_patterns=ALLOW))
+        if not HEX40.match(revision):
+            raise ValueError(f"revision {revision!r} is not a full commit sha")
+        allow = ALLOW + (REMOTE_CODE if trusts_remote_code(repo, revision) else [])
+        snap = Path(snapshot_download(repo, revision=revision, allow_patterns=allow))
     except Exception as e:  # noqa: BLE001 - recorded, not hidden
         err.write_text(json.dumps({"repo": repo, "revision": revision, "stage": "download",
                                    "error": f"{type(e).__name__}: {e}"}, indent=2) + "\n")

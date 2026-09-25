@@ -27,8 +27,8 @@
         "additionalProperties": false,
         "required": ["repo", "revision"],
         "properties": {
-          "repo": { "type": "string" },
-          "revision": { "type": "string" },
+          "repo": { "$ref": "#/$defs/hf_repo" },
+          "revision": { "$ref": "#/$defs/hf_revision" },
           "variant": { "type": "string" },
           "default_generation_prompt": { "type": "string" },
           "stop_tokens": {
@@ -37,7 +37,17 @@
             "items": { "type": "string" }
           },
           "gated": { "type": "boolean", "description": "true when the HF repo requires accepting a license; adapters must then use a documented mirror of the template/tokenizer." },
-          "tokenizer_mode": { "enum": ["hf", "mistral"], "default": "hf" }
+          "tokenizer_mode": { "enum": ["hf", "mistral"], "default": "hf" },
+          "mirror": {
+            "description": "Ungated mirror of a gated repo whose tokenizer (and, where verified, template) is identical. Fixtures of this model may pin it as `tokenizer`; no other repo may be pinned.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["repo", "revision"],
+            "properties": {
+              "repo": { "$ref": "#/$defs/hf_repo" },
+              "revision": { "$ref": "#/$defs/hf_revision" }
+            }
+          }
         }
       }
     },
@@ -46,5 +56,13 @@
       "type": "string"
     },
     "notes": { "type": "string" }
+  },
+  "$defs": {
+    "hf_repo": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "hf_revision": {
+      "description": "Full 40-hex Hub commit sha. Branch names such as main are not allowed: they move, and adapters load tokenizer code and templates from this revision.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
   }
 }
