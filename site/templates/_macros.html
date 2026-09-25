@@ -1,0 +1,21 @@
+{% macro badge(status) -%}
+<span class="badge s-{{ status|sv }}"><span aria-hidden="true">{{ status|icon }}</span> {{ status|label }}</span>
+{%- endmacro %}
+
+{% macro counts_line(counts) -%}
+{% set parts = [] %}
+{% for s in ["pass", "soft_pass", "fail", "error", "unsupported"] if counts[s] %}
+{% set _ = parts.append(counts[s] ~ " " ~ (s|label)) %}
+{% endfor %}
+{{ parts|join(" · ") if parts else "no cases" }}
+{%- endmacro %}
+
+{% macro legend() -%}
+<ul class="legend" aria-label="Status legend">
+  <li>{{ badge("pass") }} strict match on every realistic strategy</li>
+  <li>{{ badge("soft_pass") }} only whitespace differs (normalization <code>soft-v1</code>)</li>
+  <li>{{ badge("fail") }} a check failed</li>
+  <li>{{ badge("error") }} the harness failed, not the engine's parser</li>
+  <li>{{ badge("unsupported") }} the engine has no parser for this family or model</li>
+</ul>
+{%- endmacro %}

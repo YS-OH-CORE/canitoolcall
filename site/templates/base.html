@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="generator" content="canitoolcall {{ version }}">
+<title>{% block title %}CanIToolCall matrix{% endblock %}</title>
+<link rel="stylesheet" href="{{ root }}assets/style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="{{ root }}index.html">CanIToolCall</a>
+    <span class="tagline">caniuse.com for tool calling</span>
+  </div>
+</header>
+<main id="main" class="wrap">
+{% block main %}{% endblock %}
+</main>
+<footer class="site">
+  <div class="wrap">
+    <p>Built by canitoolcall {{ version }} from the <a href="{{ root }}index.html#runs">results files listed under Runs</a>
+    (aggregate: <a href="{{ root }}matrix.json">matrix.json</a>). Every number on this site comes from a real
+    <code>canitoolcall run</code>: fixtures are replayed offline through each engine's own parser code.</p>
+  </div>
+</footer>
+</body>
+</html>

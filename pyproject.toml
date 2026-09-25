@@ -69,9 +69,11 @@ packages = ["src/canitoolcall"]
 # the suite via the pytest plugin without cloning this repo.
 "spec" = "canitoolcall/_data/spec"
 "fixtures" = "canitoolcall/_data/fixtures"
+# `canitoolcall matrix` from an installed wheel (matrix.default_templates_dir falls back here).
+"site/templates" = "canitoolcall/_data/templates"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "spec", "fixtures", "tests", "docs", "scripts", "harnesses", "site/templates", "README.md", "LICENSE", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md"]
+include = ["src", "spec", "fixtures", "tests", "docs", "scripts", "harnesses", "site/templates", "README.md", "LICENSE", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "SECURITY.md"]
 
 
 [tool.pytest.ini_options]

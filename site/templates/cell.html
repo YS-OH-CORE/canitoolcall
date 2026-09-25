@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, counts_line, legend %}
+{% set fam_name = family_names.get(cell.family, cell.family) %}
+{% block title %}{{ fam_name }} on {{ cell.engine }} {{ cell.engine_version }} · CanIToolCall{% endblock %}
+{% block main %}
+<nav aria-label="Breadcrumb" class="crumbs">
+  <ol>
+    <li><a href="{{ root }}index.html">Matrix</a></li>
+    <li aria-current="page">{{ fam_name }} on {{ cell.engine }} {{ cell.engine_version }}</li>
+  </ol>
+</nav>
+
+<h1>{{ fam_name }} <span class="on">on</span> {{ cell.engine }} {{ cell.engine_version }}</h1>
+<p class="headline">
+  {{ badge(cell.status) }}
+  {% if cell.pass_rate is not none %}<span class="rate">{{ cell.pass_rate|pct }} strict pass</span>{% endif %}
+  <span class="counts">{{ counts_line(cell.counts) }}</span>
+</p>
+
+<section aria-labelledby="run-h">
+<h2 id="run-h">Run</h2>
+<dl class="meta">
+  <dt>Engine</dt><dd>{{ run.engine.name }} {{ run.engine.version }}{% if run.engine.commit %} (<code>{{ run.engine.commit }}</code>){% endif %}</dd>
+  <dt>Run</dt><dd><time datetime="{{ run.run.started_at }}">{{ run.run.started_at }}</time> to <time datetime="{{ run.run.finished_at }}">{{ run.run.finished_at }}</time></dd>
+  <dt>Platform</dt><dd>{{ run.run.platform }}, Python {{ run.run.python }}, canitoolcall {{ run.canitoolcall_version }}</dd>
+  <dt>Strategies</dt><dd>{{ run.run.strategies|join(", ") }} (normalization <code>{{ run.run.normalization }}</code>)</dd>
+  <dt>Fixtures digest</dt><dd><code>{{ run.run.fixtures_digest }}</code>
+    {% if have_corpus %}
+      {% if digest_matches %}<span class="ok-note">the fixture corpus used for this site matches the run</span>
+      {% else %}<span class="warn-note">the fixture corpus has changed since this run; raw outputs below are the current versions</span>{% endif %}
+    {% endif %}
+  </dd>
+  {% if run.engine.details %}
+  <dt>Engine details</dt><dd><pre class="json">{{ run.engine.details|pretty }}</pre></dd>
+  {% endif %}
+  {% if data_file %}<dt>Results file</dt><dd><a href="{{ root }}{{ data_file }}">{{ data_file }}</a></dd>{% endif %}
+</dl>
+{% if corpus_note %}<p class="warn-note">{{ corpus_note }}</p>{% endif %}
+</section>
+
+<section aria-labelledby="checks-h">
+<h2 id="checks-h">Checks</h2>
+{% if cell.checks %}
+<div class="scroll" role="region" aria-labelledby="checks-h" tabindex="0">
+<table class="checks">
+  <caption>Per fixture, the worst result of each check over the non-streaming parse and every realistic chunking strategy.</caption>
+  <thead>
+    <tr><th scope="col">Check</th><th scope="col" class="num">Pass</th><th scope="col" class="num">Soft</th>
+    <th scope="col" class="num">Fail</th><th scope="col" class="num">Error</th><th scope="col" class="num">Strict pass rate</th></tr>
+  </thead>
+  <tbody>
+    {% for k in cell.checks %}
+    <tr>
+      <th scope="row"><code>{{ k.check }}</code></th>
+      <td class="num">{{ k.counts["pass"] }}</td>
+      <td class="num">{{ k.counts["soft_pass"] }}</td>
+      <td class="num{% if k.counts['fail'] %} bad{% endif %}">{{ k.counts["fail"] }}</td>
+      <td class="num{% if k.counts['error'] %} bad{% endif %}">{{ k.counts["error"] }}</td>
+      <td class="num">{{ k.pass_rate|pct }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p>No checks applied (no supported fixtures).</p>
+{% endif %}
+{% if skipped %}
+<p>Strategies the worker could not run (not counted):</p>
+<ul class="skipped">
+  {% for strategy, (n, reason) in skipped.items() %}
+  <li><code>{{ strategy }}</code> skipped for {{ n }} fixture(s): {{ reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if cell.stress_failures %}
+<p class="stress">{{ cell.stress_failures }} fixture(s) failed an opt-in stress strategy (<code>char:*</code>, which can split
+special tokens). These are listed below but never count toward the status.</p>
+{% endif %}
+</section>
+
+<section aria-labelledby="fx-h">
+<h2 id="fx-h">Fixtures needing attention</h2>
+{% set attention = views|rejectattr("status", "equalto", "unsupported")|list %}
+{% set unsupported = views|selectattr("status", "equalto", "unsupported")|list %}
+{% if not attention %}
+<p>Every supported fixture passed strictly on every realistic strategy.</p>
+{% endif %}
+{% for v in attention %}
+<details class="case s-{{ v.status|sv }}" id="{{ v.anchor }}"{% if attention|length <= 5 %} open{% endif %}>
+  <summary>
+    {{ badge(v.status) }} <code class="fid">{{ v.fixture_id }}</code>
+    {% set names = v.failing|map(attribute="check")|unique|list %}
+    {% if names %}<span class="muted">{{ names|join(", ") }}</span>{% endif %}
+  </summary>
+  <div class="case-body">
+    {% if v.failing %}
+    <table class="failing">
+      <caption class="sr-only">Checks that did not pass for {{ v.fixture_id }}</caption>
+      <thead><tr><th scope="col">Check</th><th scope="col">Strategy</th><th scope="col">Result</th><th scope="col">Detail</th></tr></thead>
+      <tbody>
+        {% for c in v.failing %}
+        <tr><td><code>{{ c.check }}</code></td><td><code>{{ c.strategy }}</code></td><td>{{ badge(c.status) }}</td><td>{{ c.detail or "" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if v.stress %}
+    <p class="stress">Stress strategies (not counted): {% for c in v.stress %}<code>{{ c.check }}@{{ c.strategy }}</code> {{ c.status|label }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% if v.skipped %}
+    <p class="muted">Skipped strategies: {% for s, r in v.skipped.items() %}<code>{{ s }}</code> ({{ r }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% if v.harness_error %}
+    <h3>Harness error</h3>
+    <pre class="err">{{ v.harness_error }}</pre>
+    {% endif %}
+
+    <h3>Minimal repro</h3>
+    <pre class="repro"><code>{{ v.repro }}</code></pre>
+    <p class="muted">Set up the engine first with <code>scripts/engines/{{ cell.engine }}.sh</code>; this run used {{ run.engine.name }} {{ run.engine.version }}.
+    {% if v.fixture and v.fixture.source %}The fixture is line {{ v.fixture.line }} of <code>{{ v.fixture.source }}</code>.{% endif %}</p>
+
+    {% if v.outcomes %}
+    <h3>Observed {% if v.fixture and v.fixture.expected_json %}vs expected{% endif %}</h3>
+    <p class="muted">Identical parses are grouped. Empty strings are shown as <code>null</code>, as in strict comparison.</p>
+    {% for o in v.outcomes %}
+    <div class="outcome">
+      <p class="strats">Strategies: {% for s in o.strategies %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+      {% if o.diff %}
+      <pre class="diff" aria-label="Unified diff from expected to observed">{% for cls, line in o.diff %}<span class="d-{{ cls }}">{{ line }}</span>
+{% endfor %}</pre>
+      {% else %}
+      {% if o.matches_expected %}<p class="ok-note">Matches the expected parse.</p>{% endif %}
+      <pre class="json">{{ o.observed_json }}</pre>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="muted">The results file does not include the observed parses for this fixture.</p>
+    {% endif %}
+
+    {% if v.fixture %}
+    <h3>Fixture</h3>
+    <p>Provenance: {{ v.fixture.provenance_kind }}, <a href="{{ v.fixture.provenance_url }}" rel="noopener">{{ v.fixture.provenance_url }}</a>.
+    Tags: {% for t in v.fixture.tags %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}.</p>
+    {% if v.fixture.expected_error %}<p>Expected graceful failure: {{ v.fixture.expected_error }}.</p>{% endif %}
+    <h4>Raw output</h4>
+    <pre class="raw">{{ v.fixture.raw_output }}</pre>
+    {% if v.fixture.expected_json %}
+    <h4>Expected parse</h4>
+    <pre class="json">{{ v.fixture.expected_json }}</pre>
+    {% endif %}
+    <details class="record">
+      <summary>Fixture record (JSONL, ready to vendor into an engine's tests)</summary>
+      <pre class="jsonl">{{ v.fixture.record_jsonl }}</pre>
+    </details>
+    {% endif %}
+
+    {% if v.parser_config_json %}
+    <details class="record">
+      <summary>Parser configuration</summary>
+      <pre class="json">{{ v.parser_config_json }}</pre>
+    </details>
+    {% endif %}
+  </div>
+</details>
+{% endfor %}
+
+{% if unsupported %}
+<h3 id="unsupported-h">Unsupported fixtures</h3>
+<p>The adapter declined these fixtures because this engine version has no parser for the family or model.</p>
+<ul class="unsupported" aria-labelledby="unsupported-h">
+  {% for v in unsupported %}
+  <li id="{{ v.anchor }}"><code>{{ v.fixture_id }}</code>{% if v.reason %}: {{ v.reason }}{% elif v.harness_error %}: {{ v.harness_error }}{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+</section>
+
+{{ legend() }}
+{% endblock %}

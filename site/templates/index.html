@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, counts_line, legend %}
+{% block main %}
+<h1>Tool-call parser conformance matrix</h1>
+<p class="lede">Each cell shows how one inference engine's own tool-call and reasoning parsers handle one model
+family's recorded outputs, parsed once without streaming and once per token-chunking strategy. Pass rates are
+strict; whitespace-only differences are counted separately as soft passes.
+{% if latest %}Latest run: <time datetime="{{ latest }}">{{ latest|date }}</time>.{% endif %}</p>
+
+{% if not matrix.runs %}
+<section class="empty" aria-labelledby="empty-h">
+  <h2 id="empty-h">No results yet</h2>
+  <p>No results files were found. Run <code>canitoolcall run --engine &lt;engine&gt;</code>, then
+  <code>canitoolcall matrix</code>. This site never shows data that did not come from a real run.</p>
+</section>
+{% else %}
+{{ legend() }}
+
+<section aria-labelledby="grid-h">
+<h2 id="grid-h">Families × engines</h2>
+<div class="scroll" role="region" aria-labelledby="grid-h" tabindex="0">
+<table class="grid">
+  <caption>Headline status, strict pass rate and case counts per family and engine version.
+  Checks that did not pass on every case are listed in each cell; select a cell for the failing fixtures.</caption>
+  <thead>
+    <tr>
+      <th scope="col">Family</th>
+      {% for run in matrix.runs %}
+      <th scope="col" class="eng">
+        <span class="eng-name">{{ run.engine.name }}</span>
+        <span class="eng-ver">{{ run.engine.version }}</span>
+        <span class="eng-date">run <time datetime="{{ run.run.finished_at }}">{{ run.run.finished_at|date }}</time></span>
+      </th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for fam in matrix.families %}
+    <tr>
+      <th scope="row" class="fam">
+        <span class="fam-name">{{ family_names.get(fam, fam) }}</span>
+        {% if family_names.get(fam) %}<code class="fam-slug">{{ fam }}</code>{% endif %}
+      </th>
+      {% for run in matrix.runs %}
+      {% set c = matrix.cell(fam, run.engine.name, run.engine.version) %}
+      {% if c is none %}
+      <td class="cell s-none"><span class="muted">not run</span></td>
+      {% else %}
+      <td class="cell s-{{ c.status|sv }}">
+        <a class="cell-link" href="{{ cell_path(c.engine, c.engine_version, c.family) }}"
+           aria-label="{{ family_names.get(fam, fam) }} on {{ c.engine }} {{ c.engine_version }}: {{ c.status|label }}{% if c.pass_rate is not none %}, {{ c.pass_rate|pct }} strict pass{% endif %}">
+          {{ badge(c.status) }}
+          {% if c.pass_rate is not none %}<span class="rate">{{ c.pass_rate|pct }}</span>{% endif %}
+        </a>
+        <span class="counts">{{ counts_line(c.counts) }}</span>
+        {% if c.weak_checks %}
+        <ul class="weak" aria-label="Checks below 100%">
+          {% for k in c.weak_checks %}
+          <li><code>{{ k.check }}</code> {{ k.counts["pass"] }}/{{ k.applied }}{% if k.counts["soft_pass"] %} ({{ k.counts["soft_pass"] }} soft){% endif %}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if c.stress_failures %}<span class="stress">stress (char) failures: {{ c.stress_failures }}</span>{% endif %}
+      </td>
+      {% endif %}
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+
+<section aria-labelledby="checks-h">
+<h2 id="checks-h">Pass rate by check</h2>
+<p>Over all supported fixtures of each run. A fixture counts once per check: its worst result over the
+non-streaming parse and every realistic chunking strategy.</p>
+<div class="scroll" role="region" aria-labelledby="checks-h" tabindex="0">
+<table class="checks">
+  <caption>Strict pass rate per check and engine version (strict passes / fixtures the check applied to; soft passes in parentheses).</caption>
+  <thead>
+    <tr>
+      <th scope="col">Check</th>
+      {% for run in matrix.runs %}<th scope="col">{{ run.engine.name }} {{ run.engine.version }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for name in all_checks %}
+    <tr>
+      <th scope="row"><code>{{ name }}</code></th>
+      {% for run in matrix.runs %}
+      {% set k = engine_checks[(run.engine.name, run.engine.version)].get(name) %}
+      {% if k is none %}
+      <td class="num muted">n/a</td>
+      {% else %}
+      <td class="num {% if k.counts['fail'] or k.counts['error'] %}bad{% elif k.counts['soft_pass'] %}soft{% else %}good{% endif %}">
+        {{ k.pass_rate|pct }} <span class="muted">{{ k.counts["pass"] }}/{{ k.applied }}{% if k.counts["soft_pass"] %} ({{ k.counts["soft_pass"] }} soft){% endif %}</span>
+      </td>
+      {% endif %}
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+
+<section aria-labelledby="runs-h" id="runs">
+<h2 id="runs-h">Runs</h2>
+<div class="scroll" role="region" aria-labelledby="runs-h" tabindex="0">
+<table class="runs">
+  <caption>The run behind each column. When an engine version was run more than once, the latest run is shown.</caption>
+  <thead>
+    <tr>
+      <th scope="col">Engine</th><th scope="col">Version</th><th scope="col">Commit</th>
+      <th scope="col">Finished</th><th scope="col">Platform</th><th scope="col">Python</th>
+      <th scope="col">canitoolcall</th><th scope="col">Fixtures digest</th><th scope="col">Strategies</th>
+      <th scope="col">Results</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in matrix.runs %}
+    <tr>
+      <th scope="row">{{ run.engine.name }}</th>
+      <td>{{ run.engine.version }}</td>
+      <td>{% if run.engine.commit %}<code title="{{ run.engine.commit }}">{{ run.engine.commit|short }}</code>{% else %}<span class="muted">n/a</span>{% endif %}</td>
+      <td><time datetime="{{ run.run.finished_at }}">{{ run.run.finished_at }}</time></td>
+      <td>{{ run.run.platform }}</td>
+      <td>{{ run.run.python }}</td>
+      <td>{{ run.canitoolcall_version }}</td>
+      <td><code title="{{ run.run.fixtures_digest }}">{{ run.run.fixtures_digest|short }}</code></td>
+      <td>{{ run.run.strategies|join(", ") }}</td>
+      <td>{% set f = data_files.get((run.engine.name, run.engine.version)) %}{% if f %}<a href="{{ f }}">JSON</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+{% endif %}
+{% endblock %}
