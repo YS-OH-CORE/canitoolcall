@@ -78,6 +78,11 @@ content-type = "text/markdown"
 path = "README.md"
 
 [[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# PyPI does not render Mermaid: replace each diagram with a link to the rendered README on GitHub.
+pattern = '(?s)```mermaid\n.*?```'
+replacement = '*[Diagram: view it rendered on GitHub](https://github.com/redd34/canitoolcall#readme)*'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
 # PyPI shows the README without the repository: turn relative links into absolute
 # GitHub links on the main branch of redd34/canitoolcall.
 pattern = '\]\((?!https?://|#|mailto:)([^)\s]+)\)'
