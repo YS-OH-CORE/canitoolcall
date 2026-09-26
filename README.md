@@ -20,8 +20,6 @@ CanIToolCall is a neutral conformance suite and compatibility matrix for the too
 
 The same model can call tools correctly on one server and break on another. Each engine has its own parser that turns the model's raw output into `tool_calls`, `reasoning_content` and `content`, and these parsers break often: arguments get dropped, markers leak into content, and streaming gives a different answer from non-streaming. CanIToolCall replays **recorded raw model outputs** (fixtures) through each engine's **own parser code**, offline, with no GPU and no model weights. Each output is parsed once without streaming and once for each way of splitting the stream into chunks. Every failure it finds comes with a fixture that can be pasted into a regression test.
 
-> **Status: pre-release (0.1.0.dev0).** Nothing has been published to PyPI yet. Until it is, run the commands below from a checkout with `uv run canitoolcall …` in place of `uvx canitoolcall …`.
-
 **The matrix:** <https://redd34.github.io/canitoolcall/>. The nightly workflow rebuilds it on Linux x86_64; the image above is the committed macOS arm64 snapshot.
 
 ## 60-second quickstart
