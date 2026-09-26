@@ -83,7 +83,9 @@ if [[ $venv == 1 ]]; then
   # Exact pins (the versions the vocab GGUFs were built with); huggingface_hub differs
   # per env because transformers 4.57.6 needs <1.0 and transformers 5.17.0 needs >=1.0.
   EXTRAS=("tiktoken==0.14.0" "blobfile==3.3.0" "mistral-common[image,audio]==1.12.0")
-  uv pip install -q -p "$VENV/bin/python" \
+  # unsafe-best-match: the requirements add the PyTorch CPU index, which on Linux also
+  # hosts an old `requests` (2.28.1, urllib3<1.27) that conflicts with blobfile>=3.3.
+  uv pip install -q -p "$VENV/bin/python" --index-strategy unsafe-best-match \
     -r "$SRC/requirements/requirements-convert_hf_to_gguf.txt" "${EXTRAS[@]}" "huggingface_hub==0.36.2"
   echo "venv ready: $VENV"
 
@@ -92,7 +94,7 @@ if [[ $venv == 1 ]]; then
   TF5="$ENGINE/convert-tf5"
   [[ -x "$TF5/bin/python" ]] || uv venv -q -p 3.12 "$TF5"
   grep -v '^transformers' "$SRC/requirements/requirements-convert_legacy_llama.txt" > "$ENGINE/requirements-convert-tf5.txt"
-  uv pip install -q -p "$TF5/bin/python" --extra-index-url https://download.pytorch.org/whl/cpu \
+  uv pip install -q -p "$TF5/bin/python" --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu \
     -r "$ENGINE/requirements-convert-tf5.txt" "$(grep "^torch" "$SRC/requirements/requirements-convert_hf_to_gguf.txt")" \
     "transformers==5.17.0" "${EXTRAS[@]}" "huggingface_hub==1.33.0"
   echo "fallback converter env ready: $TF5"
