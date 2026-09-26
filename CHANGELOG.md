@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1] - 2026-09-26
 
 ### Fixed
 
@@ -18,6 +18,12 @@ All notable changes to this project are documented here. The format follows
   with the reasoning markers mentioned as a hint. Found with qwen3:4b on Ollama, where
   `parallel-calls` returned both calls correctly but was reported as a failure. The offline
   suite's `no_leakage` check is unchanged.
+
+### Changed
+
+- README: a one-line `uvx` quickstart, badges, a per-engine results table, links to the issues
+  reported upstream, three Mermaid diagrams (PyPI shows a link to the rendered versions), and
+  an FAQ.
 
 ## [0.1.0] - 2026-09-26
 
