@@ -1,0 +1,51 @@
+name: New model family or fixture request
+description: Ask for (or offer) coverage of a model family, variant or edge case that the corpus does not have yet.
+labels: ["fixture"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding a model family is one PR (format notes, `family.json`, fixtures, generator). CONTRIBUTING.md has the recipe.
+        Fixtures must come from an official chat template or encoder render, an engine's test suite, a public bug
+        report, a recorded generation or an official spec. Never type a format by hand.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - new model family
+        - new variant of an existing family
+        - new fixtures / edge case for an existing family
+    validations:
+      required: true
+  - type: input
+    id: models
+    attributes:
+      label: Model(s)
+      description: Hugging Face repo ids, ideally with a revision.
+      placeholder: "e.g. MiniMaxAI/MiniMax-M2.7"
+    validations:
+      required: true
+  - type: textarea
+    id: format
+    attributes:
+      label: Tool-call format and source
+      description: The raw tool-call text the model emits, and where it comes from (template URL at a pinned revision, engine test file with line anchor, or issue URL).
+    validations:
+      required: true
+  - type: textarea
+    id: parsers
+    attributes:
+      label: Engine parsers that handle it
+      description: Parser names per engine (vLLM, SGLang, llama.cpp, Ollama, transformers), if known.
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: Download counts, known parser bugs with issue URLs, or anything else that helps prioritise.
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to open the PR myself (see CONTRIBUTING.md).

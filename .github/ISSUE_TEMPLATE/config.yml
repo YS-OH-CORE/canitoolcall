@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/redd34/canitoolcall/security/advisories/new
+    about: Please report security problems privately, as described in SECURITY.md.
+  - name: Browse the matrix
+    url: https://redd34.github.io/canitoolcall/
+    about: Every failing cell links to its fixtures, the observed parse and a one-line repro command.

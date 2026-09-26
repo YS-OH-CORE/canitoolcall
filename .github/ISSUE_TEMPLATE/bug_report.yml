@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in canitoolcall itself is wrong (harness, adapter, check, fixture, probe, matrix site).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! This form is for bugs **in canitoolcall**. If an engine's parser mis-parses a fixture,
+        that is usually an upstream bug: check the fixture's provenance, then file it with the engine
+        (see "Reporting a parser bug upstream" in CONTRIBUTING.md). If you think a fixture's `expected` is wrong,
+        use this form. Security problems go through SECURITY.md, not here.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - fixture (wrong expected result or provenance)
+        - engine adapter / harness (run)
+        - checks / chunking
+        - probe (live endpoint)
+        - matrix site
+        - pytest plugin
+        - packaging / CLI
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: For a fixture, give its id (for example `qwen3-hermes/single-call-thinking`) and say why the expected parse is wrong, with a source.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Command to reproduce
+      description: For example `uv run canitoolcall run --engine vllm --id <fixture-id> --observed all --env HF_HUB_OFFLINE=1`, or the `probe` command (never paste API keys).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The relevant output or traceback.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: canitoolcall version or commit
+      placeholder: "canitoolcall --version, or git rev-parse --short HEAD"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Engine pin and platform
+      placeholder: "e.g. vllm 0.30.0, Linux x86_64, Python 3.12"
