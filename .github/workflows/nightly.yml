@@ -58,6 +58,19 @@ jobs:
         with:
           path: .engines/${{ matrix.engine }}
           key: engine-${{ matrix.engine }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('scripts/engines/{0}.sh', matrix.engine), format('harnesses/{0}/**', matrix.engine)) }}
+      # Vocab-only GGUFs (tokenizer + chat template, no tensors: never weights) from
+      # llama.cpp's converter at the pinned commit. The llama.cpp setup script makes
+      # them (skipping those already up to date); the Ollama adapter reads the same
+      # files, so its job makes them with the converter alone unless this cache,
+      # shared by both jobs and keyed on everything the GGUFs depend on, has them.
+      # No restore-keys: a partial or stale set is rebuilt, never reused.
+      - name: Cache vocab-only GGUFs (never weights)
+        id: gguf-cache
+        if: matrix.engine == 'llamacpp' || matrix.engine == 'ollama'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .engines/gguf
+          key: gguf-vocab-${{ runner.os }}-${{ hashFiles('fixtures/*/family.json', 'fixtures/*/*.jsonl', 'scripts/engines/llamacpp.sh', 'scripts/engines/gguf_vocab.sh', 'src/canitoolcall/adapters/base.py') }}
       - name: Set up ${{ matrix.engine }}
         id: setup
         run: |
@@ -69,6 +82,11 @@ jobs:
           fi
           bash "$script"
           echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Make vocab-only GGUFs for Ollama (llama.cpp converter only)
+        if: matrix.engine == 'ollama' && steps.setup.outputs.ready == 'true' && steps.gguf-cache.outputs.cache-hit != 'true'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: bash scripts/engines/llamacpp.sh --no-harness
       - name: Prefetch pinned tokenizer and template files
         if: steps.setup.outputs.ready == 'true'
         env:

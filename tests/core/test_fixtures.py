@@ -156,3 +156,27 @@ def test_remote_code_only_for_reviewed_pins() -> None:
     assert not trusts_remote_code(repo, "main")
     assert not trusts_remote_code("attacker/looks-like-kimi", rev)
     assert not trusts_remote_code(repo, None)
+
+
+def test_missing_relative_imports(tmp_path: Path) -> None:
+    """Sibling modules an auto_map module imports relatively must be fetched too.
+
+    Kimi-K2.6 ``tokenization_kimi.py`` imports ``.tool_declaration_ts`` and Kimi-K3's
+    imports ``.encoding_k3`` (inside ``try:``); transformers loads both, so a prefetch
+    that skips them breaks offline replays.
+    """
+    from canitoolcall.adapters.base import missing_relative_imports
+
+    (tmp_path / "tokenization_kimi.py").write_text(
+        "import os\n"
+        "try:\n    from .encoding_k3 import build_chat_segments\n"
+        "except ImportError:\n    from encoding_k3 import build_chat_segments\n"
+        "from .tool_declaration_ts import encode\n"
+    )
+    (tmp_path / "configuration_kimi_k25.py").write_text("from .configuration_deepseek import DeepseekV3Config\n")
+    (tmp_path / "configuration_deepseek.py").write_text("from transformers import PretrainedConfig\n")
+    (tmp_path / "encoding").mkdir()
+    (tmp_path / "encoding" / "encode.py").write_text("from .pkg.util import x\nimport json\n")
+    assert missing_relative_imports(tmp_path) == ["encoding/pkg/util.py", "encoding_k3.py", "tool_declaration_ts.py"]
+    (tmp_path / "encoding_k3.py").write_text("from __future__ import annotations\n")
+    assert missing_relative_imports(tmp_path) == ["encoding/pkg/util.py", "tool_declaration_ts.py"]

@@ -12,7 +12,9 @@
 #      Also .engines/llamacpp/convert-tf5: the same requirements with transformers
 #      5.17.0, a recorded fallback for tokenizer files transformers 4.57.6 cannot read.
 #
-# Usage: scripts/engines/llamacpp.sh [--no-venv] [--no-vocab]
+# Usage: scripts/engines/llamacpp.sh [--no-harness] [--no-venv] [--no-vocab]
+#   --no-harness  skip step 2 (converter only: what the Ollama job needs to make the
+#                 vocab-only GGUFs it shares with this adapter; no cmake needed)
 #   --no-venv   skip step 3
 #   --no-vocab  do not build the vocab-only GGUFs for the fixture reference models
 #               (by default, scripts/engines/gguf_vocab.sh --all runs at the end)
@@ -31,19 +33,21 @@ VENV="$ROOT/.venvs/llamacpp"
 REPO="${LLAMACPP_REPO:-https://github.com/ggml-org/llama.cpp}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)}"
 
+harness=1
 venv=1
 vocab=1
 for arg in "$@"; do
   case "$arg" in
+    --no-harness) harness=0 ;;
     --no-venv) venv=0 ;;
     --no-vocab) vocab=0 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
-command -v cmake >/dev/null || { echo "cmake is required (e.g. brew install cmake)" >&2; exit 1; }
+[[ $harness == 0 ]] || command -v cmake >/dev/null || { echo "cmake is required (e.g. brew install cmake)" >&2; exit 1; }
 
 # 1. Source at the pin (shallow fetch of exactly one commit).
 mkdir -p "$ENGINE"
@@ -63,11 +67,13 @@ if [[ -n "$(git -C "$SRC" status --porcelain --untracked-files=no)" ]]; then
 fi
 
 # 2. Harness build (Release, CPU only; see harnesses/llamacpp/CMakeLists.txt).
-cmake -S "$ROOT/harnesses/llamacpp" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DLLAMA_CPP_DIR="$SRC" >/dev/null
-cmake --build "$BUILD" --target canitoolcall-llamacpp -j "$JOBS" >/dev/null
-BIN="$BUILD/canitoolcall-llamacpp"
-echo '{"op":"hello"}' | "$BIN" | head -1
-echo "built $BIN"
+if [[ $harness == 1 ]]; then
+  cmake -S "$ROOT/harnesses/llamacpp" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DLLAMA_CPP_DIR="$SRC" >/dev/null
+  cmake --build "$BUILD" --target canitoolcall-llamacpp -j "$JOBS" >/dev/null
+  BIN="$BUILD/canitoolcall-llamacpp"
+  echo '{"op":"hello"}' | "$BIN" | head -1
+  echo "built $BIN"
+fi
 
 # 3. Converter / worker venv.
 if [[ $venv == 1 ]]; then

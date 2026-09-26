@@ -35,8 +35,10 @@ the engine must see ``finish_reason: "length"`` and no stop token.
 from __future__ import annotations
 
 import abc
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 from canitoolcall.chunking import TokensPerStep
@@ -70,6 +72,38 @@ fixture is in scope).
 def trusts_remote_code(repo: str, revision: str | None) -> bool:
     """True only for the reviewed pins in :data:`REMOTE_CODE_ALLOWLIST`."""
     return revision is not None and (repo, revision) in REMOTE_CODE_ALLOWLIST
+
+
+REMOTE_CODE_PATTERNS: tuple[str, ...] = ("tokenization_*.py", "configuration_*.py")
+"""Entry-point repo code fetched for :data:`REMOTE_CODE_ALLOWLIST` pins (``auto_map`` modules).
+
+Those modules may import sibling modules relatively (Kimi-K2.6
+``tokenization_kimi.py`` -> ``.tool_declaration_ts``, Kimi-K3 -> ``.encoding_k3``);
+transformers loads those too, so a download step must follow them with
+:func:`missing_relative_imports` or an offline load fails.
+"""
+
+_RELATIVE_IMPORT = re.compile(r"^\s*(?:from\s+\.(\w+(?:\.\w+)*)\s+import\b|import\s+\.(\w+(?:\.\w+)*))", re.MULTILINE)
+
+
+def missing_relative_imports(snapshot: Path) -> list[str]:
+    """Repo-relative ``.py`` paths that ``*.py`` files in ``snapshot`` import relatively but lack.
+
+    Mirrors ``transformers.dynamic_module_utils.get_relative_imports`` (which reads
+    the source with regexes, including imports inside ``try:`` blocks): every
+    ``from .x import`` / ``import .x`` in a module transformers would load must be
+    present next to it. Only call this for :func:`trusts_remote_code` pins.
+    """
+    missing: set[str] = set()
+    for module in sorted(snapshot.rglob("*.py")):
+        if "__pycache__" in module.parts:
+            continue
+        base = module.parent.relative_to(snapshot)
+        for m in _RELATIVE_IMPORT.finditer(module.read_text(encoding="utf-8", errors="replace")):
+            rel = (base / ((m.group(1) or m.group(2)).replace(".", "/") + ".py")).as_posix()
+            if not (snapshot / rel).is_file():
+                missing.add(rel)
+    return sorted(missing)
 
 
 @dataclass(frozen=True)

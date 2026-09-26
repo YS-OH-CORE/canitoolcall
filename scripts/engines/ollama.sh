@@ -71,5 +71,5 @@ echo '{"op":"describe","parser":"qwen3-coder"}' | "$BIN/ctcreplay"
 echo '{"op":"hello"}' | "$BIN/ctc-detok"
 echo "built $BIN/ctcreplay and $BIN/ctc-detok"
 if [ ! -d "${CANITOOLCALL_GGUF_DIR:-$ROOT/.engines/gguf}" ]; then
-  echo "note: no vocab GGUFs yet; run scripts/engines/gguf_vocab.sh (llama.cpp adapter) before replaying"
+  echo "note: no vocab GGUFs yet; run scripts/engines/llamacpp.sh --no-harness (converter + gguf_vocab.sh --all) before replaying"
 fi

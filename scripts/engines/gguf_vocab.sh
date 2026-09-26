@@ -63,14 +63,20 @@ ALLOW = [
     "tokenizer.model", "*.tiktoken", "tiktoken.model", "vocab.json", "merges.txt", "vocab.txt",
     "tekken.json", "chat_template.jinja", "chat_template.json", "*.jinja",
 ]
-# The converter loads tokenizers with trust_remote_code=True. Repo code is only
-# downloaded for the reviewed pins in canitoolcall.adapters.base.REMOTE_CODE_ALLOWLIST,
-# so a fixture or family.json cannot make this script run code from an arbitrary repo.
-REMOTE_CODE = ["tokenization_*.py", "configuration_*.py"]
+# The converter loads tokenizers with trust_remote_code=True. Repo code (the auto_map
+# modules plus the sibling modules they import relatively) is only downloaded for the
+# reviewed pins in canitoolcall.adapters.base.REMOTE_CODE_ALLOWLIST, so a fixture or
+# family.json cannot make this script run code from an arbitrary repo.
 sys.path.insert(0, str(root / "src"))
-from canitoolcall.adapters.base import trusts_remote_code  # noqa: E402
+from canitoolcall.adapters.base import (  # noqa: E402
+    REMOTE_CODE_PATTERNS,
+    missing_relative_imports,
+    trusts_remote_code,
+)
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+# transformers' error when an offline load needs a file that is not in the snapshot.
+OFFLINE_MISS = "couldn't connect to 'https://huggingface.co'"
 
 
 def _set_add_bos_token(model_dir: Path) -> None:
@@ -152,8 +158,13 @@ def build(repo: str, revision: str, llama_commit: str) -> bool:
     try:
         if not HEX40.match(revision):
             raise ValueError(f"revision {revision!r} is not a full commit sha")
-        allow = ALLOW + (REMOTE_CODE if trusts_remote_code(repo, revision) else [])
+        remote = trusts_remote_code(repo, revision)
+        allow = ALLOW + (list(REMOTE_CODE_PATTERNS) if remote else [])
         snap = Path(snapshot_download(repo, revision=revision, allow_patterns=allow))
+        requested: set[str] = set()
+        while remote and (todo := [f for f in missing_relative_imports(snap) if f not in requested]):
+            requested.update(todo)
+            snap = Path(snapshot_download(repo, revision=revision, allow_patterns=todo))
     except Exception as e:  # noqa: BLE001 - recorded, not hidden
         err.write_text(json.dumps({"repo": repo, "revision": revision, "stage": "download",
                                    "error": f"{type(e).__name__}: {e}"}, indent=2) + "\n")
@@ -169,6 +180,14 @@ def build(repo: str, revision: str, llama_commit: str) -> bool:
                                    "error": f"incomplete snapshot (no config.json or params.json): {present}"},
                                   indent=2) + "\n")
         print(f"FAILED download {repo}@{revision}: incomplete snapshot {present}", file=sys.stderr)
+        return False
+
+    gaps = missing_relative_imports(snap) if trusts_remote_code(repo, revision) else []
+    if gaps:
+        err.write_text(json.dumps({"repo": repo, "revision": revision, "stage": "download",
+                                   "error": f"incomplete snapshot (repo code imports missing modules): {gaps}"},
+                                  indent=2) + "\n")
+        print(f"FAILED download {repo}@{revision}: repo code imports missing modules {gaps}", file=sys.stderr)
         return False
 
     tmp = gguf.with_suffix(".tmp")
@@ -211,11 +230,15 @@ def build(repo: str, revision: str, llama_commit: str) -> bool:
             if converter_env is not None:
                 break
     if converter_env is None:
-        err.write_text(json.dumps({"repo": repo, "revision": revision, "stage": "convert",
+        # The converter runs offline: a file it asked the Hub for is a download gap
+        # (unexpected, fails setup), not llama.cpp rejecting the model.
+        offline = any(OFFLINE_MISS in a["error"] for a in attempts)
+        stage = "download" if offline else "convert"
+        err.write_text(json.dumps({"repo": repo, "revision": revision, "stage": stage,
                                    "attempts": attempts,
                                    "error": attempts[-1]["error"] if attempts else "no converter env"},
                                   indent=2) + "\n")
-        print(f"FAILED convert {repo}@{revision} (see {log})", file=sys.stderr)
+        print(f"FAILED {stage} {repo}@{revision} (see {log})", file=sys.stderr)
         return False
     tmp.replace(gguf)
 

@@ -4,7 +4,8 @@ Downloads, at the pinned revisions, the files adapters read (never weights) for
 every ``family.json`` reference model, its declared mirror, and every fixture
 ``tokenizer`` pin. Afterwards replays can run with ``HF_HUB_OFFLINE=1`` (DESIGN.md
 adapter rule 10), so bulk runs never hit Hub rate limits. Repository code
-(``tokenization_*.py``) is fetched only for the reviewed pins in
+(``tokenization_*.py``, ``configuration_*.py`` and the sibling modules they import
+relatively, as transformers loads them) is fetched only for the reviewed pins in
 ``canitoolcall.adapters.base.REMOTE_CODE_ALLOWLIST``. Set ``HF_TOKEN`` to raise
 anonymous rate limits; it is optional because every pinned repo is public.
 
@@ -23,7 +24,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from canitoolcall.adapters.base import trusts_remote_code  # noqa: E402
+from canitoolcall.adapters.base import (  # noqa: E402
+    REMOTE_CODE_PATTERNS,
+    missing_relative_imports,
+    trusts_remote_code,
+)
 
 ALLOW = [
     "config.json",
@@ -44,7 +49,6 @@ ALLOW = [
     "*.jinja",
     "encoding/*.py",
 ]
-REMOTE_CODE = ["tokenization_*.py", "configuration_*.py"]
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -63,9 +67,24 @@ def pins(root: Path = ROOT) -> dict[tuple[str, str], None]:
     return out
 
 
-def main() -> int:
+def fetch(repo: str, revision: str, allow: list[str]) -> Path:
+    """Download ``allow`` at ``revision``; for remote-code pins, also every module it imports."""
     from huggingface_hub import snapshot_download
 
+    remote = trusts_remote_code(repo, revision)
+    snap = Path(
+        snapshot_download(
+            repo, revision=revision, allow_patterns=allow + (list(REMOTE_CODE_PATTERNS) if remote else [])
+        )
+    )
+    requested: set[str] = set()
+    while remote and (todo := [f for f in missing_relative_imports(snap) if f not in requested]):
+        requested.update(todo)  # a module missing from the repo is left to the loader to report
+        snap = Path(snapshot_download(repo, revision=revision, allow_patterns=todo))
+    return snap
+
+
+def main() -> int:
     failed = 0
     for repo, revision in pins():
         if not HEX40.match(revision):
@@ -74,9 +93,8 @@ def main() -> int:
             continue
         if repo.startswith("meta-llama/"):
             continue  # gated; fixtures pin the documented ungated mirror instead
-        allow = ALLOW + (REMOTE_CODE if trusts_remote_code(repo, revision) else [])
         try:
-            snapshot_download(repo, revision=revision, allow_patterns=allow)
+            fetch(repo, revision, ALLOW)
             print(f"cached {repo}@{revision[:12]}")
         except Exception as e:
             print(f"FAILED {repo}@{revision[:12]}: {type(e).__name__}: {e}", file=sys.stderr)
