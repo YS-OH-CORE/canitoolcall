@@ -1,12 +1,26 @@
 # CanIToolCall
 
-**caniuse.com for tool calling.** CanIToolCall is a neutral conformance suite and compatibility matrix for the tool-call and reasoning parsers of open-weight models, across inference engines: vLLM, SGLang, llama.cpp, Ollama and HF transformers.
+**caniuse for tool calling:** see whether your model's tool calls survive your inference engine's parser, streaming included.
+
+[![The CanIToolCall matrix: 9 model families × 5 inference engines, from the 2026-09-25 snapshot](https://raw.githubusercontent.com/redd34/canitoolcall/main/docs/img/matrix.png)](https://redd34.github.io/canitoolcall/)
+
+**Every engine we tested has tool-call parser bugs.** We replayed 469 fixtures offline through the parser code of vLLM 0.30.0, SGLang 0.5.20, llama.cpp `a25c9865`, Ollama `7af39318` and transformers 5.17.0. The triage found **22 new parser bugs**, none of which we could find in the upstream trackers, plus 10 already-reported bugs that still reproduce. Two examples: multi-token streaming deltas silently drop tool calls or their arguments, and marker text such as `</tool_call>` inside an argument string breaks parsing in every engine. The numbers come from the [2026-09-25 snapshot](https://github.com/redd34/canitoolcall/tree/main/results/2026-09-25) and its `triage.jsonl`. Engines cover different subsets of the fixtures, so the pass rates are not a ranking.
+
+```sh
+git clone https://github.com/redd34/canitoolcall && cd canitoolcall
+uv run canitoolcall probe --base-url http://localhost:8000/v1 --model <your-model>   # check your own server
+uv run canitoolcall matrix --results results/2026-09-25                            # render the matrix locally
+```
+
+---
+
+CanIToolCall is a neutral conformance suite and compatibility matrix for the tool-call and reasoning parsers of open-weight models, across inference engines: vLLM, SGLang, llama.cpp, Ollama and HF transformers.
 
 The same model can call tools correctly on one server and break on another. Each engine has its own parser that turns the model's raw output into `tool_calls`, `reasoning_content` and `content`, and these parsers break often: arguments get dropped, markers leak into content, and streaming gives a different answer from non-streaming. CanIToolCall replays **recorded raw model outputs** (fixtures) through each engine's **own parser code**, offline, with no GPU and no model weights. Each output is parsed once without streaming and once for each way of splitting the stream into chunks. Every failure it finds comes with a fixture that can be pasted into a regression test.
 
 > **Status: pre-release (0.1.0.dev0).** Nothing has been published to PyPI yet. Until it is, run the commands below from a checkout with `uv run canitoolcall …` in place of `uvx canitoolcall …`.
 
-**The matrix:** <https://redd34.github.io/canitoolcall/>. The nightly workflow publishes it there once the repository is public.
+**The matrix:** <https://redd34.github.io/canitoolcall/>. The nightly workflow rebuilds it on Linux x86_64; the image above is the committed macOS arm64 snapshot.
 
 ## 60-second quickstart
 
@@ -25,6 +39,30 @@ It sends a short series of scripted tool-use requests, first without streaming a
 - a follow-up turn after a tool result
 - reasoning followed by a call
 
+Here is example output. It comes from the **mock OpenAI-compatible server in the test suite** (`tests/probe/conftest.py`), not from a real engine, with the mock's "tool-call delta without `index`" quirk turned on for the streaming parallel-calls request so that a failure shows:
+
+```text
+$ canitoolcall probe --base-url http://localhost:8011/v1 --model mock-model
+canitoolcall probe  http://localhost:8011/v1  model=mock-model
+
+scenario              non-stream  stream  stream=non-stream
+--------------------  ----------  ------  -----------------
+single-call           pass        pass    pass
+parallel-calls        pass        fail    pass
+no-call               pass        pass    pass
+nested-args           pass        pass    pass
+unicode-args          pass        pass    pass
+empty-args            pass        pass    pass
+forced-tool-choice    pass        pass    pass
+tool-result-followup  pass        pass    pass
+reasoning-then-call   pass        pass    pass
+
+summary: 26 pass, 1 fail, 0 error, 0 skip
+
+problems:
+  parallel-calls [stream] fail: tool-call delta without an integer 'index' (clients cannot merge deltas)
+```
+
 No API key is sent unless you set one: the key is read from `$CANITOOLCALL_API_KEY`, or from the variable you name with `--api-key-env` (pass `--api-key-env OPENAI_API_KEY` to use that one; it is never read by default, so an exported OpenAI key cannot leak to a third-party endpoint). The key is only sent in the `Authorization` header, only to `--base-url` (redirects are not followed), and is never logged. The probe refuses to send a key over plain `http://` to a host other than localhost unless you pass `--allow-insecure`. Add `--json report.json` to keep a machine-readable report. The exit code is `0` when everything passes, `1` on failures and `2` on usage errors or an unreachable endpoint.
 
 **Replay the offline suite against an engine.** This needs a checkout, because each engine runs in its own isolated environment:
@@ -35,6 +73,15 @@ uv sync
 bash scripts/engines/vllm.sh           # builds .venvs/vllm (pinned; CPU only; no weights)
 uv run canitoolcall run --engine vllm   # writes results/vllm-<version>.json
 uv run canitoolcall matrix              # renders site/_build/index.html from results/*.json
+```
+
+Real output from the transformers adapter, replaying the Gemma 4 fixtures through `tokenizer.parse_response`:
+
+```text
+$ uv run canitoolcall run --engine transformers --family gemma4 --env HF_HUB_OFFLINE=1
+transformers 5.17.0: 48 case(s) -> results/transformers-5.17.0.json
+  gemma4         pass=33  soft_pass=7  fail=8
+  total          pass=33  soft_pass=7  fail=8  error=0  unsupported=0
 ```
 
 Other useful commands:
