@@ -6,10 +6,12 @@
 
 **Every engine we tested has tool-call parser bugs.** We replayed 469 fixtures offline through the parser code of vLLM 0.30.0, SGLang 0.5.20, llama.cpp `a25c9865`, Ollama `7af39318` and transformers 5.17.0. The triage found **22 new parser bugs**, none of which we could find in the upstream trackers, plus 10 already-reported bugs that still reproduce. Two examples: multi-token streaming deltas silently drop tool calls or their arguments, and marker text such as `</tool_call>` inside an argument string breaks parsing in every engine. The numbers come from the [2026-09-25 snapshot](https://github.com/redd34/canitoolcall/tree/main/results/2026-09-25) and its `triage.jsonl`. Engines cover different subsets of the fixtures, so the pass rates are not a ranking.
 
+Check your own OpenAI-compatible server, then render the matrix locally:
+
 ```sh
 git clone https://github.com/redd34/canitoolcall && cd canitoolcall
-uv run canitoolcall probe --base-url http://localhost:8000/v1 --model <your-model>   # check your own server
-uv run canitoolcall matrix --results results/2026-09-25                            # render the matrix locally
+uv run canitoolcall probe --base-url http://localhost:8000/v1 --model <your-model>
+uv run canitoolcall matrix --results results/2026-09-25   # writes site/_build/index.html
 ```
 
 ---
