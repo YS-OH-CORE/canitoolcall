@@ -47,9 +47,10 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
 
 import imported  # noqa: E402
-from _core import (  # noqa: E402
+from _shared.core import (  # noqa: E402
     REPO_ROOT,
     Message,
     Provenance,

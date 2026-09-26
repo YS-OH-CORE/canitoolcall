@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from _core import Provenance, Record, Tool, tool
+from _shared.core import Provenance, Record, Tool, tool
 
 VLLM_SHA = "ced6857afa0ea7b2e3f0846a62e1394e90f15607"
 OLLAMA_SHA = "7af393188defd52d370464de0d2064649cab9b41"
