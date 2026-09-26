@@ -24,7 +24,7 @@ Nothing in this repository has been pushed, published or posted. Every step belo
   curl -s -o /dev/null -w "%{http_code}\n" https://pypi.org/pypi/canitoolcall/json   # expect 404
   curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com/repos/redd34/canitoolcall  # expect 404 until you create it
   ```
-- [x] **1.2 Decide the publishing identity.** RESOLVED 2026-09-26: all commits are authored as `Saurav Lall <analyst@eipindia.com>` (history rewritten before any push; repo-local git config set).
+- [x] **1.2 Decide the publishing identity.** RESOLVED 2026-09-26: all commits are authored as `Saurav Lall <saurav.lall1+github@gmail.com>` (history rewritten before any push; repo-local git config set).
 - [x] **1.3 Fill in the repository location.** Done: the owner is `redd34`, and the repository is `https://github.com/redd34/canitoolcall`.
   - `README.md`: the matrix URL (`https://redd34.github.io/canitoolcall/`) and the clone URL.
   - `pyproject.toml`: the `fancy-pypi-readme` substitution `replacement`, which turns the README's relative links into `https://github.com/redd34/canitoolcall/blob/main/...` on PyPI, and `[project.urls]` (`Homepage`, `Issues`, `Changelog`, `Matrix`).
