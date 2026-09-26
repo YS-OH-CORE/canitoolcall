@@ -48,6 +48,9 @@ from canitoolcall.results import ParseResult
 ToolSpec = Mapping[str, Any]
 """An OpenAI-format tool: ``{"type": "function", "function": {...}}``."""
 
+PLACEHOLDER_USER_MESSAGE = "Use the tools to answer."
+"""Shared placeholder user turn used when fixtures carry no conversation."""
+
 
 REMOTE_CODE_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     {

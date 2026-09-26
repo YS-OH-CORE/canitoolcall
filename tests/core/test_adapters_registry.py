@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 import pytest
 
 from canitoolcall.adapters import ENGINES, adapter_class, engine_python
-from canitoolcall.adapters.base import Adapter, ReplayInput, Support, ToolSpec
+from canitoolcall.adapters.base import PLACEHOLDER_USER_MESSAGE, Adapter, ReplayInput, Support, ToolSpec
 from canitoolcall.adapters.worker import serve
 from canitoolcall.fixtures import load_families, read_jsonl
 from canitoolcall.results import ParseResult
@@ -22,6 +22,13 @@ def test_registry_imports_without_engine(engine: str) -> None:
     cls = adapter_class(engine)
     assert cls.name == engine
     assert cls.pinned_version
+
+
+def test_adapters_share_one_placeholder_user_turn() -> None:
+    from canitoolcall.adapters.llamacpp import PROMPT_MESSAGES
+
+    assert PLACEHOLDER_USER_MESSAGE == "Use the tools to answer."
+    assert PROMPT_MESSAGES == ({"role": "user", "content": PLACEHOLDER_USER_MESSAGE},)
 
 
 def test_unknown_engine() -> None:

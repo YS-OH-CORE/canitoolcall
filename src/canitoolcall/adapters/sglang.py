@@ -56,6 +56,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from canitoolcall.adapters.base import (
+    PLACEHOLDER_USER_MESSAGE,
     Adapter,
     AdapterUnavailable,
     ReplayInput,
@@ -141,7 +142,6 @@ PARSERS: dict[str, tuple[ParserRule, ...]] = {
 
 HARMONY_CALL = "<|call|>"
 HARMONY_RETURN = "<|return|>"
-REPLAY_USER_MESSAGE = "(canitoolcall replay)"
 REQUEST_ID = "chatcmpl-canitoolcall-replay"
 
 
@@ -540,7 +540,7 @@ class SglangAdapter(Adapter):
             self._tools[raw.fixture_id] = [dict(t) for t in tools]
         req = protocol.ChatCompletionRequest(
             model="canitoolcall-replay",
-            messages=[{"role": "user", "content": REPLAY_USER_MESSAGE}],
+            messages=[{"role": "user", "content": PLACEHOLDER_USER_MESSAGE}],
             tools=[dict(t) for t in tools] if tools else None,
             stream=stream,
         )
@@ -587,7 +587,7 @@ class SglangAdapter(Adapter):
         if ctx.template is not None:
             try:
                 out = tok.apply_chat_template(
-                    [{"role": "user", "content": REPLAY_USER_MESSAGE}],
+                    [{"role": "user", "content": PLACEHOLDER_USER_MESSAGE}],
                     tools=[dict(t) for t in tools] if tools else None,
                     add_generation_prompt=True,
                     tokenize=True,
