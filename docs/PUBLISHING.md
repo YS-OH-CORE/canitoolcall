@@ -8,12 +8,10 @@ Nothing is pushed or published from the development machine. The repository, the
 
 - [ ] Check that the names are still free:
   - PyPI: `https://pypi.org/pypi/canitoolcall/json` returns 404.
-  - GitHub: the org or repo `canitoolcall` is available.
+  - GitHub: the repository `redd34/canitoolcall` does not exist yet (`https://api.github.com/repos/redd34/canitoolcall` returns 404).
 - [ ] Decide which identity publishes the project. Every commit so far is authored with the repository-local `git config user.email`; if that should be a personal address, set it and rewrite the (still local) history before the first push, for example `git rebase -r --root --exec 'git commit --amend --no-edit --reset-author'`. Check whether an employer agreement covers the project.
-- [ ] Create the GitHub owner (org or user) that will host the repository, then replace the placeholders:
-  - `<owner>` in `README.md` (the clone URL and the matrix URL) and in the `fancy-pypi-readme` substitution in `pyproject.toml` (it makes the README's relative links absolute on PyPI).
-  - Add `[project.urls]` to `pyproject.toml`: `Homepage`, `Issues` and `Changelog` (`.../blob/main/CHANGELOG.md`) for the real repository.
-  - The contact method in `CODE_OF_CONDUCT.md` (search for `CONTACT METHOD`).
+- [x] Choose the GitHub owner: the repository is `https://github.com/redd34/canitoolcall` (the personal account `redd34`, no org). The owner is filled in everywhere: the clone and matrix URLs in `README.md`, the `fancy-pypi-readme` substitution in `pyproject.toml` (it makes the README's relative links absolute on PyPI), `[project.urls]` (`Homepage`, `Issues`, `Changelog`, `Matrix`) and the private vulnerability reporting link in `SECURITY.md`.
+- [ ] Replace the contact method in `CODE_OF_CONDUCT.md` (search for `CONTACT METHOD`).
   - `python scripts/check_release.py` must then report no placeholders; the release workflow runs it too.
 - [ ] Run the full local check, and confirm the build is clean:
 

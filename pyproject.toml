@@ -54,10 +54,11 @@ canitoolcall = "canitoolcall.cli:main"
 [project.entry-points.pytest11]
 canitoolcall = "canitoolcall.pytest_plugin"
 
-# [project.urls] is deliberately absent until the repository exists: metadata of an
-# uploaded release cannot be edited, and an unclaimed namespace could be registered
-# by anyone. docs/PUBLISHING.md section 1 adds Homepage/Issues/Changelog, and
-# scripts/check_release.py refuses to release without them.
+[project.urls]
+Homepage = "https://github.com/redd34/canitoolcall"
+Issues = "https://github.com/redd34/canitoolcall/issues"
+Changelog = "https://github.com/redd34/canitoolcall/blob/main/CHANGELOG.md"
+Matrix = "https://redd34.github.io/canitoolcall/"
 
 [dependency-groups]
 dev = [
@@ -78,9 +79,9 @@ path = "README.md"
 
 [[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
 # PyPI shows the README without the repository: turn relative links into absolute
-# GitHub links. The owner is filled in at release (docs/PUBLISHING.md; scripts/check_release.py).
+# GitHub links on the main branch of redd34/canitoolcall.
 pattern = '\]\((?!https?://|#|mailto:)([^)\s]+)\)'
-replacement = '](https://github.com/<owner>/canitoolcall/blob/main/\1)'
+replacement = '](https://github.com/redd34/canitoolcall/blob/main/\1)'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/canitoolcall"]

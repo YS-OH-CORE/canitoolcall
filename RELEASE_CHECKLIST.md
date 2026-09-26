@@ -10,8 +10,10 @@ Nothing in this repository has been pushed, published or posted. Every step belo
   - `canitoolcall validate`: 45 files, 0 issues.
   - `uv build` and `twine check --strict` pass for both the sdist and the wheel.
   - `canitoolcall matrix --results results/2026-09-25` renders the site from the committed real runs.
+- Repository location decided: **https://github.com/redd34/canitoolcall**, under the personal account `redd34` (no org). The owner placeholders are filled in (step 1.3).
+- `gh` on this machine is currently authenticated as `sauravl-yenta`, not `redd34`. Authenticate as `redd34` before creating or pushing the repository (step 2.1).
 - Name check (read-only GETs on 2026-09-26): `https://pypi.org/pypi/canitoolcall/json` returned 404; `https://api.github.com/users/canitoolcall` returned 404; a GitHub repository search for `canitoolcall` found 0 repositories.
-- `python scripts/check_release.py` reports 6 blockers. All of them are the placeholders listed in step 1.3, and they can only be filled once the repository exists.
+- `python scripts/check_release.py` reports 1 blocker: the Code of Conduct contact (step 1.3b), which is still undecided.
 
 ---
 
@@ -20,26 +22,18 @@ Nothing in this repository has been pushed, published or posted. Every step belo
 - [ ] **1.1 Re-check the names**, in case they were taken since 2026-09-26:
   ```sh
   curl -s -o /dev/null -w "%{http_code}\n" https://pypi.org/pypi/canitoolcall/json   # expect 404
-  curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com/users/canitoolcall  # 404 if you want an org of that name
+  curl -s -o /dev/null -w "%{http_code}\n" https://api.github.com/repos/redd34/canitoolcall  # expect 404 until you create it
   ```
 - [ ] **1.2 Decide the publishing identity.** All 19 commits are authored as `Saurav Lall <sauravl@yentaknows.com>`, a work address. If the project should be published under a personal identity (for example `saurav.lall1@gmail.com`), rewrite the still-local history before the first push. Also check whether an employment agreement covers the project.
   ```sh
   git config user.email "<publishing address>"
   git rebase -r --root --exec 'git commit --amend --no-edit --reset-author'
   ```
-- [ ] **1.3 Fill in the placeholders.** This needs the GitHub owner, meaning the user or org chosen in step 2. In the list below, `OWNER` stands for that name.
-  - `README.md` line 9 (the matrix URL) and line 33 (the clone URL): replace `<owner>`.
-  - `pyproject.toml`, in the `fancy-pypi-readme` substitution `replacement`: replace `<owner>`.
-  - `pyproject.toml`: add
-    ```toml
-    [project.urls]
-    Homepage = "https://github.com/OWNER/canitoolcall"
-    Issues = "https://github.com/OWNER/canitoolcall/issues"
-    Changelog = "https://github.com/OWNER/canitoolcall/blob/main/CHANGELOG.md"
-    Matrix = "https://OWNER.github.io/canitoolcall/"
-    ```
-    and delete the comment above where the section would go, which says it is deliberately absent.
-  - `CODE_OF_CONDUCT.md` line 39: replace the `CONTACT METHOD` placeholder with a real address.
+- [x] **1.3 Fill in the repository location.** Done: the owner is `redd34`, and the repository is `https://github.com/redd34/canitoolcall`.
+  - `README.md`: the matrix URL (`https://redd34.github.io/canitoolcall/`) and the clone URL.
+  - `pyproject.toml`: the `fancy-pypi-readme` substitution `replacement`, which turns the README's relative links into `https://github.com/redd34/canitoolcall/blob/main/...` on PyPI, and `[project.urls]` (`Homepage`, `Issues`, `Changelog`, `Matrix`).
+  - `SECURITY.md`: links to `https://github.com/redd34/canitoolcall/security/advisories/new` (enable it in step 2.3).
+- [ ] **1.3b Fill in the Code of Conduct contact.** `CODE_OF_CONDUCT.md` line 39: replace the `CONTACT METHOD` placeholder with a real address. Not decided yet.
   - Then run `uv run python scripts/check_release.py`. It must report 0 blockers.
 - [ ] **1.4 Set the version.** In `src/canitoolcall/__init__.py`, set `__version__ = "0.1.0"`, currently `0.1.0.dev0`. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [0.1.0] - YYYY-MM-DD`. Also remove the "Status: pre-release (0.1.0.dev0)" note in `README.md`, and switch the quickstart text from `uv run` to `uvx`.
 - [ ] **1.5 Run the full local check, then commit:**
@@ -59,12 +53,15 @@ Nothing in this repository has been pushed, published or posted. Every step belo
 
 ## 2. Create the GitHub repository and push
 
-- [ ] **2.1 Create the owner** (user or org) if it does not exist, then create an empty public repository `OWNER/canitoolcall`. Do not add a README, licence or .gitignore, since the repository already has them.
+- [ ] **2.1 Authenticate as `redd34`, then create an empty public repository `redd34/canitoolcall`.** `gh` is currently logged in as `sauravl-yenta`; creating the repository with that login would put it under the wrong account. Do not add a README, licence or .gitignore, since the repository already has them.
   ```sh
-  gh repo create OWNER/canitoolcall --public \
+  gh auth login                     # log in as redd34 (or: gh auth switch --user redd34)
+  gh auth status                    # the active account must be redd34
+  ssh -T git@github.com             # must greet redd34; otherwise use the https remote URL
+  gh repo create redd34/canitoolcall --public \
     --description "caniuse.com for tool calling: conformance suite and matrix for tool-call and reasoning parsers across inference engines" \
-    --homepage "https://OWNER.github.io/canitoolcall/"
-  git remote add origin git@github.com:OWNER/canitoolcall.git
+    --homepage "https://redd34.github.io/canitoolcall/"
+  git remote add origin git@github.com:redd34/canitoolcall.git
   git push -u origin main
   ```
   Only push `integrate/v0.1` as well if you want to keep the branch name.
@@ -79,7 +76,7 @@ Nothing in this repository has been pushed, published or posted. Every step belo
 - [ ] **3.2 Optional: Settings → Secrets → Actions:** add `HF_TOKEN`, a read-only token. The nightly prefetch works without it, but hits the anonymous Hub rate limit sooner.
 - [ ] **3.3 Actions → nightly → Run workflow** (on `main`). Then check that:
   - each engine job uploads a results file, or shows a "not run" notice with the reason;
-  - the `deploy to GitHub Pages` job succeeds, and `https://OWNER.github.io/canitoolcall/` loads;
+  - the `deploy to GitHub Pages` job succeeds, and `https://redd34.github.io/canitoolcall/` loads;
   - the per-cell drill-down pages load, and the footer shows the "Built with Llama" notice.
 - [ ] **3.4 Compare the first nightly matrix with `results/2026-09-25/`.** On Linux x86_64, pass counts should match the committed snapshot. If they don't, investigate before announcing. Note that nightly writes `.json` files while the snapshot uses `.json.gz`, and the matrix reads both.
 
@@ -90,7 +87,7 @@ Nothing in this repository has been pushed, published or posted. Every step belo
   | Field | Value |
   |---|---|
   | PyPI project name | `canitoolcall` |
-  | Owner | `OWNER` |
+  | Owner | `redd34` |
   | Repository name | `canitoolcall` |
   | Workflow name | `release.yml` |
   | Environment name | `pypi` |
@@ -158,7 +155,7 @@ These drafts are pre-filled from the committed snapshot `results/2026-09-25/` an
 Before filing any of them:
 1. Re-check against the engine's **latest** release or main. The pins are vLLM 0.30.0, SGLang 0.5.20, llama.cpp `a25c9865`, Ollama `7af39318` and transformers 5.17.0.
 2. Search the tracker for duplicates.
-3. Replace `OWNER` in the fixture links.
+3. Link fixtures as `https://github.com/redd34/canitoolcall/blob/main/fixtures/<family>/<file>.jsonl`.
 4. Where a direct repro script exists, lead with it: it uses only the engine's own API.
 
 The harness repro for any finding is:
@@ -172,7 +169,7 @@ The harness feeds the parser the tokenizer's exact token ids for the fixture's t
 - `token`: one token per delta
 - `rand:1:8`: seeded random groups of 1 to 8 tokens
 
-The shared part of every report is: "Found by canitoolcall (https://github.com/OWNER/canitoolcall), which replays recorded or template-rendered model outputs through each engine's own parser, offline. The fixture and its provenance are linked below."
+The shared part of every report is: "Found by canitoolcall (https://github.com/redd34/canitoolcall), which replays recorded or template-rendered model outputs through each engine's own parser, offline. The fixture and its provenance are linked below."
 
 ### 7.1 vLLM (0.30.0)
 

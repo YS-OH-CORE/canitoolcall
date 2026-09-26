@@ -6,7 +6,7 @@ CanIToolCall is pre-release. Only the latest release on PyPI, and the `main` bra
 
 ## Reporting a vulnerability
 
-Please **do not open a public issue**. Report it privately through GitHub's private vulnerability reporting: open the repository's **Security** tab and choose **Report a vulnerability**. Include the version or commit, the command you ran, and what happened. We aim to acknowledge reports within a week and to agree a disclosure date with you once a fix is ready.
+Please **do not open a public issue**. Report it privately through GitHub's private vulnerability reporting, at <https://github.com/redd34/canitoolcall/security/advisories/new> (the repository's **Security** tab, **Report a vulnerability**). Include the version or commit, the command you ran, and what happened. We aim to acknowledge reports within a week and to agree a disclosure date with you once a fix is ready.
 
 ## Scope
 

@@ -6,7 +6,7 @@ The same model can call tools correctly on one server and break on another. Each
 
 > **Status: pre-release (0.1.0.dev0).** Nothing has been published to PyPI yet. Until it is, run the commands below from a checkout with `uv run canitoolcall …` in place of `uvx canitoolcall …`.
 
-**The matrix:** `https://<owner>.github.io/canitoolcall/`. This is a placeholder: the nightly workflow publishes the site once the repository is public.
+**The matrix:** <https://redd34.github.io/canitoolcall/>. The nightly workflow publishes it there once the repository is public.
 
 ## 60-second quickstart
 
@@ -30,7 +30,7 @@ No API key is sent unless you set one: the key is read from `$CANITOOLCALL_API_K
 **Replay the offline suite against an engine.** This needs a checkout, because each engine runs in its own isolated environment:
 
 ```sh
-git clone https://github.com/<owner>/canitoolcall && cd canitoolcall
+git clone https://github.com/redd34/canitoolcall && cd canitoolcall
 uv sync
 bash scripts/engines/vllm.sh           # builds .venvs/vllm (pinned; CPU only; no weights)
 uv run canitoolcall run --engine vllm   # writes results/vllm-<version>.json
@@ -104,8 +104,9 @@ The fixtures are language-neutral JSON Lines files: see [`fixtures/`](fixtures/)
 # tests/test_canitoolcall.py in your engine's repo
 from canitoolcall.pytest_plugin import assert_conforms
 
-def test_conformance(canitoolcall_fixture):          # one test per fixture, ids = fixture ids
-    result = my_engine_parse(canitoolcall_fixture)    # -> canitoolcall.results.ParseResult
+
+def test_conformance(canitoolcall_fixture):  # one test per fixture, ids = fixture ids
+    result = my_engine_parse(canitoolcall_fixture)  # -> canitoolcall.results.ParseResult
     assert_conforms(canitoolcall_fixture, result)
 ```
 
