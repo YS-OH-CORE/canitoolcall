@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from _core import Provenance, Record, Tool, tool
+from _shared.core import Provenance, Record, Tool, tool
 
 VLLM_SHA = "ced6857afa0ea7b2e3f0846a62e1394e90f15607"
 SGLANG_SHA = "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"

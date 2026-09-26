@@ -1,7 +1,7 @@
-"""Shared helpers for the fixture generators of fixtures group 3 (kimi, glm, llama).
+"""Shared helpers for the Kimi, GLM, and Llama fixture generators.
 
-This file is kept byte-identical in ``scripts/fixtures/{kimi,glm,llama}/_core.py`` so
-that each family directory stays self-contained (one builder owns each directory).
+The shared implementation keeps rendering, validation, and serialization behavior
+identical across the three related fixture families.
 
 The generators run as PEP 723 scripts (``uv run --script``) in a throwaway env with
 pinned ``transformers``/``tokenizers``/``tiktoken``. Only tokenizer and template
