@@ -10,7 +10,10 @@ stream-vs-non-stream equivalence row per scenario.
 Unlike the offline suite this exercises the whole stack (template, sampling,
 parser, server), so outcomes depend on the model's behaviour. Checks are
 therefore structural (a call to the right tool with schema-valid arguments,
-stream == non-stream shape, no marker leakage) rather than exact-text.
+stream == non-stream shape, no marker leakage into content, tool names or
+arguments) rather than exact-text. Markers in ``reasoning_content`` are only a
+warning: the expected reasoning is unknown, and models often draft their call
+(``<tool_call>{...}</tool_call>``) while thinking.
 
 Uses only the standard library HTTP client (``urllib``) so it runs anywhere;
 SSE is parsed by hand. The API key is sent only in the ``Authorization``
@@ -47,8 +50,9 @@ EQUIVALENCE_CHECK = "stream_equals_nonstream"
 LEAK_MARKERS: tuple[str, ...] = (
     # Every string below is quoted from docs/formats/<family>.md, which were
     # rendered from the official templates/encoders. A server that returns one
-    # of them in content, reasoning, a tool name or an argument value is
-    # leaking the raw model format through its parser.
+    # of them in content, a tool name or an argument value is leaking the raw
+    # model format through its parser. In reasoning_content they are only a
+    # warning (see REASONING_MARKER_WARNING).
     # qwen3-hermes / qwen3-xml / glm
     "<tool_call>",
     "</tool_call>",
@@ -93,6 +97,14 @@ LEAK_MARKERS: tuple[str, ...] = (
     "<|channel>",
     "<channel|>",
 )
+
+
+REASONING_MARKER_WARNING = (
+    "reasoning mentions tool-call markers {markers} "
+    "(usually the model drafting its call while thinking; not a parser leak)"
+)
+"""Warning for format markers in ``reasoning_content``. The probe cannot know the
+expected reasoning text, so markers there do not fail a scenario on their own."""
 
 
 # --------------------------------------------------------------------------- model
@@ -217,14 +229,17 @@ class ProbeReport:
         out.append(line(["-" * w for w in widths]))
         out.extend(line(r) for r in rows)
         s = self.summary()
-        out += ["", "summary: " + ", ".join(f"{s[k]} {k}" for k in _STATUSES)]
+        warned = [o for o in self.outcomes if o.warnings]
+        summary = "summary: " + ", ".join(f"{s[k]} {k}" for k in _STATUSES)
+        if warned:
+            summary += f" ({len(warned)} with warnings, marked *)"
+        out += ["", summary]
         problems = [o for o in self.outcomes if o.status in ("fail", "error")]
         if problems:
             out += ["", "problems:"]
             out += [f"  {_label(o)} {o.status}: {o.detail}" for o in problems]
-        warned = [o for o in self.outcomes if o.warnings]
         if warned:
-            out += ["", "warnings (*):"]
+            out += ["", "warnings (*, do not affect the exit code):"]
             out += [f"  {_label(o)}: {w}" for o in warned for w in o.warnings]
         return "\n".join(out)
 
@@ -742,9 +757,12 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(v)
 
 
+def _found_markers(texts: Iterable[str], markers: Sequence[str]) -> list[str]:
+    return sorted({m for t in texts for m in markers if m in t})
+
+
 def _find_leaks(field_name: str, texts: Iterable[str], markers: Sequence[str]) -> list[str]:
-    found = sorted({m for t in texts for m in markers if m in t})
-    return [f"marker {m!r} leaked into {field_name}" for m in found]
+    return [f"marker {m!r} leaked into {field_name}" for m in _found_markers(texts, markers)]
 
 
 def _is_subsequence(needle: Sequence[str], hay: Sequence[str]) -> bool:
@@ -757,15 +775,33 @@ def evaluate(
 ) -> tuple[ProbeStatus, str | None]:
     """Judge one observed result against ``scenario.expect``.
 
+    Same as :func:`evaluate_with_warnings` without the warnings.
+    """
+    status, detail, _ = evaluate_with_warnings(scenario, result, markers=markers)
+    return status, detail
+
+
+def evaluate_with_warnings(
+    scenario: Scenario, result: ParseResult, *, markers: Sequence[str] = LEAK_MARKERS
+) -> tuple[ProbeStatus, str | None, tuple[str, ...]]:
+    """Judge one observed result against ``scenario.expect``; returns
+    ``(status, detail, warnings)``.
+
     Always checked: every call names an offered tool, its arguments decode to
     a JSON object valid against the tool's ``parameters`` schema, no format
-    marker leaks into content/reasoning/names/argument values, and no U+FFFD
+    marker leaks into content, tool names or argument values, and no U+FFFD
     replacement character appears. Then the scenario's expectation.
+
+    Markers in ``reasoning_content`` do not fail on their own: the expected
+    reasoning is unknown and models often draft their call while thinking. They
+    are returned as a warning, and added as a hint to the detail when the
+    expected calls are missing or wrong (the call may be stuck in the reasoning).
     """
     if result.exception:
-        return "fail", f"exception: {result.exception}"
+        return "fail", f"exception: {result.exception}", ()
     exp = scenario.expect
     problems: list[str] = []
+    warnings: list[str] = []
     offered = {t["function"]["name"]: t["function"].get("parameters") or {} for t in scenario.tools}
     names = [c.name for c in result.tool_calls]
     decoded: list[tuple[str, dict[str, Any]]] = []
@@ -785,7 +821,9 @@ def evaluate(
             problems += [f"call {i} ({call.name}): {m}" for m in _schema_errors(args, offered[call.name])]
 
     problems += _find_leaks("content", [result.content or ""], markers)
-    problems += _find_leaks("reasoning_content", [result.reasoning_content or ""], markers)
+    in_reasoning = _found_markers([result.reasoning_content or ""], markers)
+    if in_reasoning:
+        warnings.append(REASONING_MARKER_WARNING.format(markers=", ".join(map(repr, in_reasoning))))
     problems += _find_leaks("a tool name", names, markers)
     problems += _find_leaks("tool arguments", [s for _, a in decoded for s in _strings(a)], markers)
     all_text = [
@@ -796,12 +834,15 @@ def evaluate(
     if any("�" in t for t in all_text):
         problems.append("U+FFFD replacement character in output (broken UTF-8 decoding)")
 
+    calls_wrong = False
     if exp.tool_names:
         need = max(exp.min_calls, len(exp.tool_names))
         if len(names) < need:
             problems.append(f"expected at least {need} tool call(s) {list(exp.tool_names)}, got {names}")
+            calls_wrong = True
         elif not _is_subsequence(exp.tool_names, names):
             problems.append(f"expected calls {list(exp.tool_names)} in order, got {names}")
+            calls_wrong = True
     elif names:
         problems.append(f"expected no tool call, got {names}")
     for tool, keys in exp.required_argument_keys.items():
@@ -823,8 +864,13 @@ def evaluate(
         problems.append("expected no reasoning_content")
 
     if problems:
-        return "fail", "; ".join(problems)
-    return "pass", _describe(result)
+        if calls_wrong and in_reasoning:
+            problems.append(
+                f"hint: reasoning_content contains {', '.join(map(repr, in_reasoning))}, "
+                "so the call may have been written inside the reasoning"
+            )
+        return "fail", "; ".join(problems), tuple(warnings)
+    return "pass", _describe(result), tuple(warnings)
 
 
 def _describe(result: ParseResult) -> str:
@@ -889,12 +935,13 @@ def _run_one(
         resp = chat_response(base_url, model, scenario, stream=stream, api_key=api_key, timeout_s=timeout_s)
     except ProbeRequestError as e:
         return ProbeOutcome(scenario.id, stream, "error", _redact(str(e), api_key), 0.0)
-    status, detail = evaluate(scenario, resp.result)
+    status, detail, judged = evaluate_with_warnings(scenario, resp.result)
     if resp.problems:
         protocol = "; ".join(resp.problems)
         detail = f"{protocol}; {detail}" if status == "fail" else protocol
         status = "fail"
-    return ProbeOutcome(scenario.id, stream, status, detail, resp.latency_s, resp.result, warnings=resp.warnings)
+    warnings = (*resp.warnings, *judged)
+    return ProbeOutcome(scenario.id, stream, status, detail, resp.latency_s, resp.result, warnings=warnings)
 
 
 def probe(

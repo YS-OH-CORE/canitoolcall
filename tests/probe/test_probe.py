@@ -26,6 +26,7 @@ from canitoolcall.probe import (
     check_base_url,
     compare_modes,
     evaluate,
+    evaluate_with_warnings,
     insecure_key_transport,
     iter_sse_data,
     probe,
@@ -152,6 +153,83 @@ def test_think_tags_in_content_fail(mock_openai: Any) -> None:
         assert o.status == "fail"
         assert "'<think>' leaked into content" in (o.detail or "")
         assert "'</think>' leaked into content" in (o.detail or "")
+
+
+# Real qwen3:4b behaviour on Ollama: the model drafts its calls inside its
+# thinking, then the server returns both calls correctly.
+DRAFTED_REASONING = (
+    "The user wants Paris and Tokyo. So the tool_call XMLs would be:\n"
+    '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>\n'
+    '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Tokyo"}}\n</tool_call>'
+)
+
+
+def test_markers_drafted_in_reasoning_pass_with_a_warning(mock_openai: Any, capsys: pytest.CaptureFixture[str]) -> None:
+    mock_openai.override("parallel-calls", reasoning=DRAFTED_REASONING)
+    sc = [s for s in BUILTIN_SCENARIOS if s.id == "parallel-calls"]
+    report = probe(mock_openai.base_url, "m", scenarios=sc)
+    for stream in (False, True):
+        o = outcome(report, "parallel-calls", stream=stream)
+        assert o.status == "pass", o.detail
+        assert o.observed is not None and [c.name for c in o.observed.tool_calls] == ["get_weather"] * 2
+        assert any("reasoning mentions tool-call markers" in w and "'<tool_call>'" in w for w in o.warnings)
+        assert any("not a parser leak" in w for w in o.warnings)
+    assert outcome(report, "parallel-calls", equiv=True).status == "pass"
+    text = report.render_text()
+    row = next(line for line in text.splitlines() if line.startswith("parallel-calls"))
+    assert row.split() == ["parallel-calls", "pass*", "pass*", "pass"]
+    assert "2 with warnings" in text
+    assert "parallel-calls [stream]: reasoning mentions tool-call markers" in text
+    assert "problems:" not in text
+    # warnings are visible but do not change the exit code
+    rc = cli.main(["probe", "--base-url", mock_openai.base_url, "--model", "m"])
+    printed = capsys.readouterr().out
+    assert rc == cli.EXIT_OK
+    assert "pass*" in printed and "reasoning mentions tool-call markers" in printed
+
+
+def test_markers_in_content_still_fail_when_reasoning_also_has_them(mock_openai: Any) -> None:
+    mock_openai.override("single-call", reasoning=DRAFTED_REASONING, content="</tool_call>")
+    report = probe(mock_openai.base_url, "m", scenarios=BUILTIN_SCENARIOS[:1])
+    for stream in (False, True):
+        o = outcome(report, "single-call", stream=stream)
+        assert o.status == "fail"
+        assert "marker '</tool_call>' leaked into content" in (o.detail or "")
+        assert "leaked into reasoning_content" not in (o.detail or "")
+        # the calls are right, so no "call inside the reasoning" hint
+        assert "hint:" not in (o.detail or "")
+        assert any("reasoning mentions tool-call markers" in w for w in o.warnings)
+
+
+def test_missing_calls_with_markers_only_in_reasoning_fail_with_a_hint(mock_openai: Any) -> None:
+    mock_openai.override("parallel-calls", reasoning=DRAFTED_REASONING, tool_calls=())
+    sc = [s for s in BUILTIN_SCENARIOS if s.id == "parallel-calls"]
+    report = probe(mock_openai.base_url, "m", scenarios=sc)
+    for stream in (False, True):
+        o = outcome(report, "parallel-calls", stream=stream)
+        assert o.status == "fail"
+        detail = o.detail or ""
+        assert detail.startswith("expected at least 2 tool call(s)")
+        assert "hint: reasoning_content contains '</tool_call>', '<tool_call>'" in detail
+        assert "leaked into reasoning_content" not in detail
+
+
+def test_evaluate_reasoning_markers_are_warnings_elsewhere_failures() -> None:
+    sc = _scenario(tool_names=("get_weather",))
+    good = _call("get_weather", '{"city": "Paris"}')
+    status, detail, warnings = evaluate_with_warnings(
+        sc, ParseResult(reasoning_content="<tool_call>draft</tool_call>", tool_calls=(good,))
+    )
+    assert status == "pass" and "reasoning_content: yes" in (detail or "")
+    assert len(warnings) == 1 and "'</tool_call>', '<tool_call>'" in warnings[0]
+    assert evaluate(sc, ParseResult(reasoning_content="<tool_call>", tool_calls=(good,)))[0] == "pass"
+    status, _, warnings = evaluate_with_warnings(sc, ParseResult(tool_calls=(good,)))
+    assert status == "pass" and warnings == ()
+    leaked_arg = _call("get_weather", '{"city": "<tool_call>Paris"}')
+    status, detail, _ = evaluate_with_warnings(
+        sc, ParseResult(reasoning_content="<tool_call>", tool_calls=(leaked_arg,))
+    )
+    assert status == "fail" and "leaked into tool arguments" in (detail or "")
 
 
 def test_parallel_call_dropped_in_stream(mock_openai: Any) -> None:
