@@ -49,7 +49,14 @@ from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
+from canitoolcall.adapters.base import (
+    PLACEHOLDER_USER_MESSAGE,
+    Adapter,
+    AdapterUnavailable,
+    ReplayInput,
+    Support,
+    ToolSpec,
+)
 from canitoolcall.chunking import TokensPerStep
 from canitoolcall.results import ParsedToolCall, ParseResult, StreamAccumulator
 
@@ -77,12 +84,6 @@ checked. Cohere and Llama are gated and were not checked."""
 
 PARSER_NAME = "response_template"
 """transformers has no named parsers: the repo's ``response_template`` is the parser."""
-
-PROMPT_USER_MESSAGE = "Please help with the request, using the available tools if needed."
-"""Placeholder user turn for rendering the prompt (fixtures carry no conversation).
-
-Only the text after the template's ``start_anchor`` (Gemma 4: ``<|turn>model\\n``)
-reaches the parser, so the wording does not affect parsing."""
 
 TEMPLATE_FILE = "tokenizer_config.json"
 
@@ -227,7 +228,7 @@ class TransformersAdapter(Adapter):
         if raw.thinking is not None:
             kwargs["enable_thinking"] = raw.thinking
         out = st.tok.apply_chat_template(
-            [{"role": "user", "content": PROMPT_USER_MESSAGE}],
+            [{"role": "user", "content": PLACEHOLDER_USER_MESSAGE}],
             tools=[dict(t) for t in tools] or None,
             add_generation_prompt=True,
             tokenize=True,
@@ -262,7 +263,7 @@ class TransformersAdapter(Adapter):
             "stream_events": "transformers.cli.serving.utils.response_events_to_chunks",
             "tools_passed_to_parser": True,
             "prompt": {
-                "user_message": PROMPT_USER_MESSAGE,
+                "user_message": PLACEHOLDER_USER_MESSAGE,
                 "add_generation_prompt": True,
                 "enable_thinking": raw.thinking,
             },

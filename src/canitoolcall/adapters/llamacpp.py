@@ -58,7 +58,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, ClassVar
 
-from canitoolcall.adapters.base import Adapter, AdapterUnavailable, ReplayInput, Support, ToolSpec
+from canitoolcall.adapters.base import (
+    PLACEHOLDER_USER_MESSAGE,
+    Adapter,
+    AdapterUnavailable,
+    ReplayInput,
+    Support,
+    ToolSpec,
+)
 from canitoolcall.chunking import TokensPerStep
 from canitoolcall.results import ParsedToolCall, ParseResult, StreamAccumulator
 
@@ -77,7 +84,7 @@ TEMPLATE_SOURCES = ("gguf", "llamacpp")
 REASONING_FORMAT = "deepseek"
 """``llama-server``'s default ``--reasoning-format`` (``common_params::reasoning_format``)."""
 
-PROMPT_MESSAGES: tuple[Mapping[str, Any], ...] = ({"role": "user", "content": "canitoolcall replay"},)
+PROMPT_MESSAGES: tuple[Mapping[str, Any], ...] = ({"role": "user", "content": PLACEHOLDER_USER_MESSAGE},)
 """The request's messages. Only the tail of the rendered prompt (the generation
 prompt) reaches the parser; the fixture's tools are passed as the request's tools."""
 

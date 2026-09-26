@@ -66,6 +66,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from canitoolcall.adapters.base import (
+    PLACEHOLDER_USER_MESSAGE,
     Adapter,
     AdapterUnavailable,
     ReplayInput,
@@ -189,9 +190,6 @@ ARCH_TOKENIZER_MODES: dict[str, str] = {
     "DeepseekV4ForConditionalGeneration": "deepseek_v4",
     "DeepseekV41ForCausalLM": "deepseek_v41",
 }
-
-USER_MESSAGE = "Use the tools to answer."
-"""The single user turn rendered to build ``prompt_token_ids`` (fixtures carry no messages)."""
 
 MAX_TOKENS = 4096
 """``max_tokens`` for ``request.to_sampling_params`` (only affects detokenizer settings)."""
@@ -351,7 +349,7 @@ class VllmAdapter(Adapter):
             "units_source": "fixture.output_token_ids" if raw.token_ids is not None else "engine tokenizer encode",
             "detokenizer": "vllm.v1.engine.detokenizer.IncrementalDetokenizer.from_new_request",
             "stop_token_in_final_delta": False,
-            "prompt_messages": [{"role": "user", "content": USER_MESSAGE}],
+            "prompt_messages": [{"role": "user", "content": PLACEHOLDER_USER_MESSAGE}],
             "generation_prompt": raw.generation_prompt,
         }
 
@@ -592,7 +590,7 @@ class VllmAdapter(Adapter):
         tool_fields: dict[str, Any] = {"tools": setup.tools, "tool_choice": "auto"} if setup.tools else {}
         return protocol.ChatCompletionRequest(
             model=setup.model.repo,
-            messages=[{"role": "user", "content": USER_MESSAGE}],
+            messages=[{"role": "user", "content": PLACEHOLDER_USER_MESSAGE}],
             stream=stream,
             chat_template_kwargs=setup.chat_template_kwargs or None,
             **tool_fields,
@@ -642,7 +640,7 @@ class VllmAdapter(Adapter):
             {"tools": tool_dicts, "tokenize": setup.renderer == "mistral"}
         )
         kwargs = params.get_apply_chat_template_kwargs()
-        messages: list[dict[str, Any]] = [{"role": "user", "content": USER_MESSAGE}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": PLACEHOLDER_USER_MESSAGE}]
         conversation = [dict(m) for m in messages]
         mode = setup.renderer
         raw_prompt: Any
