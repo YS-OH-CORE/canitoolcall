@@ -31,8 +31,8 @@ Nothing in this repository has been pushed, published or posted. Every step belo
   - `SECURITY.md`: links to `https://github.com/redd34/canitoolcall/security/advisories/new` (enable it in step 2.3).
 - [ ] **1.3b Fill in the Code of Conduct contact.** `CODE_OF_CONDUCT.md` line 39: replace the `CONTACT METHOD` placeholder with a real address. Not decided yet.
   - Then run `uv run python scripts/check_release.py`. It must report 0 blockers.
-- [ ] **1.4 Set the version.** In `src/canitoolcall/__init__.py`, set `__version__ = "0.1.0"`, currently `0.1.0.dev0`. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [0.1.0] - YYYY-MM-DD`. Also remove the "Status: pre-release (0.1.0.dev0)" note in `README.md`, and switch the quickstart text from `uv run` to `uvx`.
-- [ ] **1.5 Run the full local check, then commit:**
+- [x] **1.4 Set the version.** In `src/canitoolcall/__init__.py`, set `__version__ = "0.1.0"`, currently `0.1.0.dev0`. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [0.1.0] - YYYY-MM-DD`. Also remove the "Status: pre-release (0.1.0.dev0)" note in `README.md`, and switch the quickstart text from `uv run` to `uvx`.
+- [x] **1.5 Run the full local check, then commit:**
   ```sh
   uv run ruff check src tests scripts && uv run ruff format --check src tests scripts && uv run mypy
   uv run pytest
@@ -41,7 +41,7 @@ Nothing in this repository has been pushed, published or posted. Every step belo
   uv run python scripts/check_release.py
   git commit -am "Release 0.1.0"
   ```
-- [ ] **1.6 Audit the fixtures.** Re-run every `scripts/fixtures/*/build.py` (their Hub revisions are pinned), then run `git status`. It must stay clean, because template-rendered fixtures must regenerate byte for byte.
+- [x] **1.6 Audit the fixtures.** Re-run every `scripts/fixtures/*/build.py` (their Hub revisions are pinned), then run `git status`. It must stay clean, because template-rendered fixtures must regenerate byte for byte.
 - [ ] **1.7 Put the work on `main`.** `main` is a direct ancestor of the branch, so this is a fast-forward:
   ```sh
   git checkout main && git merge --ff-only integrate/v0.1
@@ -78,7 +78,7 @@ Nothing in this repository has been pushed, published or posted. Every step belo
 
 ## 4. Configure PyPI trusted publishing
 
-- [ ] **4.1** On pypi.org, go to **Account → Publishing → Add a new pending publisher → GitHub**:
+- [x] **4.1** On pypi.org, go to **Account → Publishing → Add a new pending publisher → GitHub**:
 
   | Field | Value |
   |---|---|
@@ -88,30 +88,30 @@ Nothing in this repository has been pushed, published or posted. Every step belo
   | Workflow name | `release.yml` |
   | Environment name | `pypi` |
 
-- [ ] **4.2** On GitHub, go to **Settings → Environments → New environment `pypi`**. Add yourself as a required reviewer, and restrict deployments to tags matching `v*`.
+- [x] **4.2** On GitHub, go to **Settings → Environments → New environment `pypi`**. Add yourself as a required reviewer, and restrict deployments to tags matching `v*`.
 - [ ] **4.3 Optional dry run:** add a pending publisher on test.pypi.org as well, and run the build job only. The release workflow fails fast if placeholders remain or if the tag does not match the built version.
 
 ## 5. Tag v0.1.0 and release
 
-- [ ] **5.1** Tag the release commit, which is the one from step 1.5, and push the tag:
+- [x] **5.1** Tag the release commit, which is the one from step 1.5, and push the tag:
   ```sh
   git tag -a v0.1.0 -m "canitoolcall 0.1.0"
   git push origin v0.1.0
   ```
-- [ ] **5.2 Actions → release → Run workflow:** under "Use workflow from", pick **tag `v0.1.0`**. Approve the `pypi` environment when prompted. The workflow refuses to run on anything but a `v*` tag.
-- [ ] **5.3 Create the GitHub release:**
+- [x] **5.2 Actions → release → Run workflow:** under "Use workflow from", pick **tag `v0.1.0`**. Approve the `pypi` environment when prompted. The workflow refuses to run on anything but a `v*` tag.
+- [x] **5.3 Create the GitHub release:**
   ```sh
   gh release create v0.1.0 --title "v0.1.0" --notes-file release-notes.md
   ```
   Here `release-notes.md` is the `## [0.1.0]` section of `CHANGELOG.md`, copied by hand; don't commit it. Attach nothing. PyPI has the artifacts.
-- [ ] **5.4 Verify from a clean machine:**
+- [x] **5.4 Verify from a clean machine:**
   ```sh
   uvx canitoolcall --version            # 0.1.0
   uvx canitoolcall probe --help
   uvx canitoolcall validate             # uses the bundled corpus
   ```
-- [ ] **5.5** Open the PyPI page and check that the README renders, the relative links resolve to GitHub, and the "Built with Llama" paragraph is present.
-- [ ] **5.6** Bump `__version__` to `0.2.0.dev0` and re-add `## [Unreleased]` to the CHANGELOG.
+- [x] **5.5** Open the PyPI page and check that the README renders, the relative links resolve to GitHub, and the "Built with Llama" paragraph is present.
+- [x] **5.6** Bump `__version__` to `0.2.0.dev0` and re-add `## [Unreleased]` to the CHANGELOG.
 
 ## 6. Announcement plan
 
