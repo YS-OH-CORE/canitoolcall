@@ -17,6 +17,8 @@ from canitoolcall.probe import (
     BUILTIN_SCENARIOS,
     EQUIVALENCE_CHECK,
     LEAK_MARKERS,
+    REASONING_DELIMITERS,
+    TOOL_CALL_MARKERS,
     ProbeExpectation,
     ProbeOutcome,
     ProbeReport,
@@ -230,6 +232,53 @@ def test_evaluate_reasoning_markers_are_warnings_elsewhere_failures() -> None:
         sc, ParseResult(reasoning_content="<tool_call>", tool_calls=(leaked_arg,))
     )
     assert status == "fail" and "leaked into tool arguments" in (detail or "")
+
+
+def test_think_tag_left_in_reasoning_fails(mock_openai: Any) -> None:
+    # e.g. sglang#35083: the glm45 reasoning parser left "\n<think>" in reasoning_content
+    mock_openai.override("reasoning-then-call", reasoning="\n<think>9.9 = 9.90 and 9.90 > 9.11.")
+    sc = [s for s in BUILTIN_SCENARIOS if s.id == "reasoning-then-call"]
+    report = probe(mock_openai.base_url, "m", scenarios=sc)
+    for stream in (False, True):
+        o = outcome(report, "reasoning-then-call", stream=stream)
+        assert o.status == "fail"
+        assert o.observed is not None and [c.name for c in o.observed.tool_calls] == ["record_answer"]
+        assert (
+            "reasoning delimiter '<think>' leaked into reasoning_content (the reasoning parser did not strip it)"
+            in (o.detail or "")
+        )
+        assert o.warnings == ()
+
+
+def test_harmony_channel_token_in_reasoning_fails(mock_openai: Any) -> None:
+    reasoning = "Need to use function get_weather.<|end|><|start|>assistant<|channel|>commentary"
+    mock_openai.override("single-call", reasoning=reasoning)
+    report = probe(mock_openai.base_url, "m", scenarios=BUILTIN_SCENARIOS[:1])
+    for stream in (False, True):
+        o = outcome(report, "single-call", stream=stream)
+        assert o.status == "fail"
+        detail = o.detail or ""
+        for m in ("<|channel|>", "<|start|>", "<|end|>"):
+            assert f"reasoning delimiter {m!r} leaked into reasoning_content" in detail
+    assert "single-call [stream] fail: reasoning delimiter" in report.render_text()
+
+
+def test_evaluate_splits_reasoning_markers_by_group() -> None:
+    sc = _scenario(tool_names=("get_weather",))
+    good = _call("get_weather", '{"city": "Paris"}')
+    # a drafted call plus a stray delimiter: the delimiter fails, the draft only warns
+    status, detail, warnings = evaluate_with_warnings(
+        sc, ParseResult(reasoning_content="</think><tool_call>{}</tool_call>", tool_calls=(good,))
+    )
+    assert status == "fail"
+    assert "reasoning delimiter '</think>' leaked into reasoning_content" in (detail or "")
+    assert "tool_call" not in (detail or "")
+    assert len(warnings) == 1 and "'</tool_call>', '<tool_call>'" in warnings[0] and "'</think>'" not in warnings[0]
+    for m in REASONING_DELIMITERS:
+        assert evaluate(sc, ParseResult(reasoning_content=f"x{m}y", tool_calls=(good,)))[0] == "fail", m
+    for m in TOOL_CALL_MARKERS:
+        status, _, warnings = evaluate_with_warnings(sc, ParseResult(reasoning_content=f"x{m}y", tool_calls=(good,)))
+        assert status == "pass" and len(warnings) == 1, m
 
 
 def test_parallel_call_dropped_in_stream(mock_openai: Any) -> None:
@@ -453,6 +502,11 @@ def test_compare_modes_is_structural() -> None:
 def test_leak_markers_are_unique_and_non_trivial() -> None:
     assert len(LEAK_MARKERS) == len(set(LEAK_MARKERS))
     assert all(len(m) >= 3 for m in LEAK_MARKERS)
+    assert not set(TOOL_CALL_MARKERS) & set(REASONING_DELIMITERS)
+    assert set(LEAK_MARKERS) == set(TOOL_CALL_MARKERS) | set(REASONING_DELIMITERS)
+    assert {"<think>", "</think>", "<|channel|>", "<|message|>", "<|start|>", "<|end|>", "<|return|>"} <= set(
+        REASONING_DELIMITERS
+    )
 
 
 # --------------------------------------------------------------------------- transport safety

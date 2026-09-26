@@ -8,13 +8,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- `canitoolcall probe` no longer fails a scenario because `reasoning_content` contains format
+- `canitoolcall probe` no longer fails a scenario because `reasoning_content` contains tool-call
   markers such as `<tool_call>`. Models often draft their call while thinking, and the probe
   cannot know the expected reasoning, so this is now a warning (`pass*`) that does not change
-  the exit code. Markers in `content`, tool names or tool arguments still fail, and a missing or
-  wrong call still fails, with the reasoning markers mentioned as a hint. Found with qwen3:4b on
-  Ollama, where `parallel-calls` returned both calls correctly but was reported as a failure.
-  The offline suite's `no_leakage` check is unchanged.
+  the exit code. Reasoning delimiters and channel markup (`<think>`, `</think>`, `[THINK]`,
+  Harmony's `<|channel|>`, `<|message|>`, `<|start|>`, `<|end|>`, `<|return|>`, …) in
+  `reasoning_content` still fail, because the reasoning parser must strip them. Markers in
+  `content`, tool names or tool arguments still fail, and a missing or wrong call still fails,
+  with the reasoning markers mentioned as a hint. Found with qwen3:4b on Ollama, where
+  `parallel-calls` returned both calls correctly but was reported as a failure. The offline
+  suite's `no_leakage` check is unchanged.
 
 ## [0.1.0] - 2026-09-26
 

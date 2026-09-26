@@ -11,9 +11,10 @@ Unlike the offline suite this exercises the whole stack (template, sampling,
 parser, server), so outcomes depend on the model's behaviour. Checks are
 therefore structural (a call to the right tool with schema-valid arguments,
 stream == non-stream shape, no marker leakage into content, tool names or
-arguments) rather than exact-text. Markers in ``reasoning_content`` are only a
-warning: the expected reasoning is unknown, and models often draft their call
-(``<tool_call>{...}</tool_call>``) while thinking.
+arguments) rather than exact-text. In ``reasoning_content`` reasoning
+delimiters (``<think>``, Harmony channel markup) still fail, but tool-call
+markers are only a warning: the expected reasoning is unknown, and models often
+draft their call (``<tool_call>{...}</tool_call>``) while thinking.
 
 Uses only the standard library HTTP client (``urllib``) so it runs anywhere;
 SSE is parsed by hand. The API key is sent only in the ``Authorization``
@@ -47,12 +48,20 @@ SCENARIO_CHECK = "scenario"
 EQUIVALENCE_CHECK = "stream_equals_nonstream"
 """``ProbeOutcome.check`` for the structural stream-vs-non-stream comparison."""
 
-LEAK_MARKERS: tuple[str, ...] = (
-    # Every string below is quoted from docs/formats/<family>.md, which were
-    # rendered from the official templates/encoders. A server that returns one
-    # of them in content, a tool name or an argument value is leaking the raw
-    # model format through its parser. In reasoning_content they are only a
-    # warning (see REASONING_MARKER_WARNING).
+# Every marker below is quoted from docs/formats/<family>.md, which were rendered
+# from the official templates/encoders. A server that returns any of them in
+# content, a tool name or an argument value is leaking the raw model format
+# through its parser. In reasoning_content the two groups are judged apart:
+#
+# * TOOL_CALL_MARKERS spell a tool call. Models often draft their call as text
+#   while thinking, and the probe cannot know the expected reasoning, so in
+#   reasoning_content they are only a warning (REASONING_MARKER_WARNING).
+# * REASONING_DELIMITERS open or close the reasoning itself, or are
+#   channel/turn control markup. A correct reasoning parser always strips its
+#   own delimiters (e.g. sglang#35083: glm45 left '\n<think>' in the
+#   reasoning), so they fail in reasoning_content too.
+
+TOOL_CALL_MARKERS: tuple[str, ...] = (
     # qwen3-hermes / qwen3-xml / glm
     "<tool_call>",
     "</tool_call>",
@@ -60,15 +69,7 @@ LEAK_MARKERS: tuple[str, ...] = (
     "<parameter=",
     "<arg_key>",
     "<arg_value>",
-    # reasoning tags (qwen3, deepseek, glm, kimi K2, mistral)
-    "<think>",
-    "</think>",
-    "[THINK]",
-    "<|im_end|>",
-    # gpt-oss (Harmony)
-    "<|start|>",
-    "<|channel|>",
-    "<|message|>",
+    # gpt-oss (Harmony): only used in tool-call messages
     "<|constrain|>",
     "<|call|>",
     # deepseek
@@ -76,35 +77,59 @@ LEAK_MARKERS: tuple[str, ...] = (
     "<｜tool▁call▁begin｜>",  # noqa: RUF001
     "<｜tool▁sep｜>",  # noqa: RUF001
     "<｜DSML｜",  # noqa: RUF001
-    # kimi K2 / K3
+    # kimi K2
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
     "<|tool_call_argument_begin|>",
-    "<|open|>",
-    "<|close|>",
-    "<|sep|>",
     # mistral
     "[TOOL_CALLS]",
     "[ARGS]",
     # llama
     "<|python_tag|>",
-    "<|eom_id|>",
-    "<|eot_id|>",
     # gemma 4
     "<|tool_call>",
     "<tool_call|>",
     '<|"|>',
+)
+"""Markers that spell a tool call: a warning in ``reasoning_content``, a failure elsewhere."""
+
+REASONING_DELIMITERS: tuple[str, ...] = (
+    # reasoning tags (qwen3, deepseek, glm, kimi K2, older magistral; mistral v13+)
+    "<think>",
+    "</think>",
+    "[THINK]",
+    "[/THINK]",
+    # gpt-oss (Harmony) channel and message markup
+    "<|start|>",
+    "<|channel|>",
+    "<|message|>",
+    "<|end|>",
+    "<|return|>",
+    # kimi K3 generic element markup (also opens and closes `think`)
+    "<|open|>",
+    "<|close|>",
+    "<|sep|>",
+    # gemma 4 thought channel
     "<|channel>",
     "<channel|>",
+    # turn control tokens (qwen chatml, llama)
+    "<|im_end|>",
+    "<|eom_id|>",
+    "<|eot_id|>",
 )
+"""Reasoning delimiters and channel/turn control markup: a failure everywhere,
+including ``reasoning_content`` (the reasoning parser must strip them)."""
+
+LEAK_MARKERS: tuple[str, ...] = TOOL_CALL_MARKERS + REASONING_DELIMITERS
+"""Every format marker; none may appear in content, tool names or argument values."""
 
 
 REASONING_MARKER_WARNING = (
     "reasoning mentions tool-call markers {markers} "
     "(usually the model drafting its call while thinking; not a parser leak)"
 )
-"""Warning for format markers in ``reasoning_content``. The probe cannot know the
-expected reasoning text, so markers there do not fail a scenario on their own."""
+"""Warning for tool-call markers in ``reasoning_content``. The probe cannot know
+the expected reasoning text, so they do not fail a scenario on their own."""
 
 
 # --------------------------------------------------------------------------- model
@@ -771,18 +796,28 @@ def _is_subsequence(needle: Sequence[str], hay: Sequence[str]) -> bool:
 
 
 def evaluate(
-    scenario: Scenario, result: ParseResult, *, markers: Sequence[str] = LEAK_MARKERS
+    scenario: Scenario,
+    result: ParseResult,
+    *,
+    markers: Sequence[str] = LEAK_MARKERS,
+    reasoning_delimiters: Sequence[str] = REASONING_DELIMITERS,
 ) -> tuple[ProbeStatus, str | None]:
     """Judge one observed result against ``scenario.expect``.
 
     Same as :func:`evaluate_with_warnings` without the warnings.
     """
-    status, detail, _ = evaluate_with_warnings(scenario, result, markers=markers)
+    status, detail, _ = evaluate_with_warnings(
+        scenario, result, markers=markers, reasoning_delimiters=reasoning_delimiters
+    )
     return status, detail
 
 
 def evaluate_with_warnings(
-    scenario: Scenario, result: ParseResult, *, markers: Sequence[str] = LEAK_MARKERS
+    scenario: Scenario,
+    result: ParseResult,
+    *,
+    markers: Sequence[str] = LEAK_MARKERS,
+    reasoning_delimiters: Sequence[str] = REASONING_DELIMITERS,
 ) -> tuple[ProbeStatus, str | None, tuple[str, ...]]:
     """Judge one observed result against ``scenario.expect``; returns
     ``(status, detail, warnings)``.
@@ -792,10 +827,12 @@ def evaluate_with_warnings(
     marker leaks into content, tool names or argument values, and no U+FFFD
     replacement character appears. Then the scenario's expectation.
 
-    Markers in ``reasoning_content`` do not fail on their own: the expected
-    reasoning is unknown and models often draft their call while thinking. They
-    are returned as a warning, and added as a hint to the detail when the
-    expected calls are missing or wrong (the call may be stuck in the reasoning).
+    In ``reasoning_content``, ``reasoning_delimiters`` (``<think>``, Harmony
+    channel markup, ...) fail: the reasoning parser must strip them. Other
+    markers (tool-call markup) do not fail on their own: the expected reasoning
+    is unknown and models often draft their call while thinking. They are
+    returned as a warning, and added as a hint to the detail when the expected
+    calls are missing or wrong (the call may be stuck in the reasoning).
     """
     if result.exception:
         return "fail", f"exception: {result.exception}", ()
@@ -821,7 +858,13 @@ def evaluate_with_warnings(
             problems += [f"call {i} ({call.name}): {m}" for m in _schema_errors(args, offered[call.name])]
 
     problems += _find_leaks("content", [result.content or ""], markers)
-    in_reasoning = _found_markers([result.reasoning_content or ""], markers)
+    found_in_reasoning = _found_markers([result.reasoning_content or ""], markers)
+    problems += [
+        f"reasoning delimiter {m!r} leaked into reasoning_content (the reasoning parser did not strip it)"
+        for m in found_in_reasoning
+        if m in reasoning_delimiters
+    ]
+    in_reasoning = [m for m in found_in_reasoning if m not in reasoning_delimiters]
     if in_reasoning:
         warnings.append(REASONING_MARKER_WARNING.format(markers=", ".join(map(repr, in_reasoning))))
     problems += _find_leaks("a tool name", names, markers)
