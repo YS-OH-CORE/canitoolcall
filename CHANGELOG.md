@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - `AGENTS.md` and `llms.txt` for AI coding agents, an "Agent check-in" issue form for sharing goals and needs, and an AI-assistance field in the PR template.
+- The Pages site now also serves `llms.txt` and `AGENTS.md` at its root.
 - `scripts/verify_upstream_pr.py`: verify an upstream parser fix PR (vLLM, SGLang, transformers) by swapping its changed files into the pinned engine, replaying the fixtures at the PR's base and head, and diffing per fixture.
 
 ## [0.1.1] - 2026-09-26

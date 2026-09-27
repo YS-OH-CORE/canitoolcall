@@ -138,6 +138,9 @@ jobs:
           ls -l results
       - name: Build the site from the results files
         run: uv run canitoolcall matrix --results results --out site/_build
+      - name: Publish the agent-facing files next to the matrix
+        # llms.txt at the site root is where agents look for it (https://llmstxt.org).
+        run: cp llms.txt AGENTS.md site/_build/
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/_build
