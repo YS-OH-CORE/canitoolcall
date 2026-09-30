@@ -38,7 +38,7 @@ while their defaults stay at the original pins.
 
 The optional JSON report must use a new file outside `.engines`, `.venvs` and
 `.git`. Existing files are not overwritten. The destination is resolved and
-checked before builds start, and report creation uses exclusive mode. This
+checked before builds start, and report publication never replaces a target. This
 also avoids following an existing report alias into a pinned binary. It is
 not a guarantee against an adversary changing parent directories concurrently.
 
@@ -53,6 +53,19 @@ previously passing fixture failed; exit 3 means no reliable comparison was
 obtained. Missing, malformed or duplicate case records, changed coverage,
 harness errors and build failures return 3 instead of a misleading success.
 The same statuses and changed-fixture shape as the existing verifier are used.
+
+Reports are completely written in a temporary file in the destination directory
+before publication. The optional export uses a no-clobber hard link, requiring
+filesystem hard-link support; lack of support is an explicit report error.
+Partial writes are not published as the requested export. This is visibility
+and error-handling behavior, not a power-loss durability guarantee.
+
+Report I/O failure returns 3 with `status=report_error` and preserves the prior
+comparison exit as `operation_exit_code`. The internal receipt is corrected
+when possible. If that write also fails, stderr emits a complete JSON record
+prefixed `VERIFICATION_REPORT_JSON `. That terminal record and process exit
+are authoritative: an older internal receipt may remain if correction failed.
+No saved-receipt guarantee is made if both storage and stderr are unavailable.
 
 This compares the chosen fixture families, not every model, tokenizer, server
 configuration or arbitrary inference behavior. A compiling harness and a

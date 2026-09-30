@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Compiled verifier reports use complete-file publication and explicit I/O failure receipts, preserving the comparison result without overwriting existing exports.
+
 - Compiled upstream-PR verification for Ollama and llama.cpp: isolated full base/head builds, revision-checked adapters, retained logs and fail-closed report validation.
 
 - `AGENTS.md` and `llms.txt` for AI coding agents, an "Agent check-in" issue form for sharing goals and needs, and an AI-assistance field in the PR template.

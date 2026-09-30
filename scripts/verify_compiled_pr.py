@@ -158,6 +158,42 @@ def report_destination(root: Path, output: Path | None) -> Path | None:
     return destination
 
 
+def write_report(path: Path, encoded: str, *, replace: bool) -> None:
+    """Publish a fully written same-directory file, never a partial export."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(encoded)
+        if replace:
+            os.replace(temporary, path)
+        else:
+            # Atomic no-clobber publication: an existing target is never replaced.
+            os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def finish_reports(report: dict[str, object], code: int, work: Path, output: Path | None) -> int:
+    """Report I/O failures explicitly, with stderr as the last-resort receipt."""
+    report["exit_code"] = code
+    local = work / "verification.json"
+    try:
+        write_report(local, json.dumps(report, indent=2) + "\n", replace=True)
+        if output is not None:
+            write_report(output, json.dumps(report, indent=2) + "\n", replace=False)
+        return code
+    except OSError as exc:
+        report.update(status="report_error", operation_exit_code=code, report_error=str(exc), exit_code=3)
+        try:
+            write_report(local, json.dumps(report, indent=2) + "\n", replace=True)
+        except OSError as persistence_error:
+            report["report_persistence_error"] = str(persistence_error)
+            print("VERIFICATION_REPORT_JSON " + json.dumps(report), file=sys.stderr)
+        return 3
+
+
 def verify(root: Path, engine: str, pr_number: int, families: list[str], output: Path | None, jobs: int) -> int:
     if engine not in REPOSITORIES or pr_number <= 0 or jobs <= 0:
         raise ValueError("expected a compiled engine, positive PR number and positive build job count")
@@ -196,20 +232,11 @@ def verify(root: Path, engine: str, pr_number: int, families: list[str], output:
         if before != after:
             report.update(status="unreplayable", error="pinned harness changed while verification was running")
             code = 3
-    report["exit_code"] = code
-    encoded = json.dumps(report, indent=2) + "\n"
-    (work / "verification.json").write_text(encoded, encoding="utf-8")
-    if output is not None:
-        try:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            with output.open("x", encoding="utf-8") as stream:
-                stream.write(encoded)
-        except OSError as exc:
-            report.update(status="unreplayable", error=f"cannot save report: {exc}", exit_code=3)
-            code = 3
-            (work / "verification.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    code = finish_reports(report, code, work, output)
     if code == 3:
-        print(f"{repo}#{pr_number} cannot be replayed: {report.get('error')}", file=sys.stderr)
+        print(
+            f"{repo}#{pr_number} cannot be replayed: {report.get('report_error', report.get('error'))}", file=sys.stderr
+        )
     else:
         print(f"{repo}#{pr_number}  base {base[:9]} -> head {head[:9]}")
         print("(two isolated full-source builds; pinned harness unchanged)")
