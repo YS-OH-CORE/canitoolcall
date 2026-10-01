@@ -95,6 +95,7 @@ def test_build_uses_fresh_workspace_and_separate_adapter_pin(tmp_path, monkeypat
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(compiled.subprocess, "run", run)
+    monkeypatch.setattr(compiled, "run_logged", run)
     env, hashes = compiled.build(root, engine, SHA, destination, 2)
     assert pinned.read_bytes() == b"original pinned bytes"
     assert hashes and all(len(value) == 64 for value in hashes.values())
@@ -120,6 +121,7 @@ def test_build_failure_keeps_pinned_binaries(tmp_path, monkeypatch, engine):
     path.write_bytes(b"do not alter")
     before = compiled.pinned_binaries(root, engine)
     monkeypatch.setattr(compiled.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(compiled, "run_logged", lambda *a, **kw: SimpleNamespace(returncode=1))
     with pytest.raises(RuntimeError, match="build exited"):
         compiled.build(root, engine, SHA, tmp_path / "work", 2)
     assert compiled.pinned_binaries(root, engine) == before
