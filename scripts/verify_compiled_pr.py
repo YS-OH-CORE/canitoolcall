@@ -16,6 +16,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from compiled_process import VerificationInterrupted, run_logged
+
 REPOSITORIES = {"ollama": "ollama/ollama", "llamacpp": "ggml-org/llama.cpp"}
 ADAPTERS = {"ollama": "ollama:OllamaAdapter", "llamacpp": "llamacpp:LlamaCppAdapter"}
 STATUSES = {"pass", "soft_pass", "fail", "error", "unsupported"}
@@ -58,7 +60,7 @@ def build(root: Path, engine: str, sha: str, destination: Path, jobs: int) -> tu
     if engine == "llamacpp":
         command.append("--no-vocab")
     with (destination / "build.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run(command, cwd=project, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=900)
+        result = run_logged(command, cwd=project, env=env, log=log)
     if result.returncode:
         raise RuntimeError(f"{engine} build exited {result.returncode}; see {destination / 'build.log'}")
     engine_root = project / ".engines" / engine
@@ -130,7 +132,7 @@ def replay(root: Path, families: list[str], destination: Path, env: dict[str, st
     process_env.update(env)
     process_env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), env["PYTHONPATH"]])
     with (destination / "replay.log").open("w", encoding="utf-8") as log:
-        result = subprocess.run(command, cwd=root, env=process_env, stdout=log, stderr=subprocess.STDOUT, timeout=900)
+        result = run_logged(command, cwd=root, env=process_env, log=log)
     return read_cases(out, result.returncode)
 
 
@@ -224,6 +226,10 @@ def verify(root: Path, engine: str, pr_number: int, families: list[str], output:
         report.update(compare(results["base"], results["head"]))
         report["status"] = "compared"
         code = 1 if report["regressed"] else 0
+    except (KeyboardInterrupt, VerificationInterrupted) as exc:
+        signum = exc.signum if isinstance(exc, VerificationInterrupted) else 2
+        report.update(status="interrupted", error=f"verification interrupted by signal {signum}")
+        code = 128 + signum
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as exc:
         report.update(status="unreplayable", error=str(exc))
     finally:
@@ -233,7 +239,7 @@ def verify(root: Path, engine: str, pr_number: int, families: list[str], output:
             report.update(status="unreplayable", error="pinned harness changed while verification was running")
             code = 3
     code = finish_reports(report, code, work, output)
-    if code == 3:
+    if code not in (0, 1):
         print(
             f"{repo}#{pr_number} cannot be replayed: {report.get('report_error', report.get('error'))}", file=sys.stderr
         )

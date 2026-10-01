@@ -74,3 +74,26 @@ mocked orchestration tests as real upstream compilation or fixture replay.
 
 The Windows host should run compilation inside its Linux/WSL environment;
 only the Python orchestration tests are intended to be host-independent.
+
+## Cancellation and process lifetime
+
+Build and replay commands run in a private POSIX session whose small Python
+supervisor retains the process-group ID until cleanup is complete. Only that
+group is signalled; unrelated processes are not enumerated or terminated.
+On timeout, SIGINT or SIGTERM, cleanup sends TERM, allows a short grace period,
+then sends KILL to remaining group members. The direct supervisor is reaped.
+Normal completion also cleans descendants left behind by the foreground tool.
+The same mechanism supports Linux and macOS without waitid/WNOWAIT.
+
+Timeout is an explicit incomplete comparison (exit 3). Handled SIGINT and
+SIGTERM are recorded as interruption (exit 130 or 143); a report-write failure
+can still yield exit 3 with the original operation code retained. These
+semantics apply while a managed build or replay is running. The subprocess
+runner requires the POSIX main thread; use WSL from Windows.
+
+Tests use expiring, owned local child/grandchild processes, including a child
+that ignores TERM, and confirm that an unrelated test process survives.
+Descendants that deliberately detach into another session, an uncatchable
+kill of the supervising Python process, uninterruptible kernel waits and
+OS failure are outside this process-group contract. This is not a general
+service supervisor or a guarantee of cleanup after power loss.
