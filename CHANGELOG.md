@@ -15,6 +15,15 @@ All notable changes to this project are documented here. The format follows
   issue and `CONTRIBUTING.md`, so a visitor landing on the published site has a
   one-click way to the code and to report a wrong cell (issue #1).
 
+### Fixed
+
+- SGLang replay on a host with a visible CUDA GPU: `sglang.sh` failed its import smoke test with `ModuleNotFoundError: No module named 'flashinfer'`, because SGLang takes CUDA-only imports whenever torch sees a GPU. `canitoolcall run` now starts SGLang workers with `CUDA_VISIBLE_DEVICES=-1` (an explicit `--env CUDA_VISIBLE_DEVICES=...` overrides it), and `sglang.sh` hides the GPUs for its smoke test. `scripts/verify_upstream_pr.py` gains `--env KEY=VALUE`. Not yet exercised on a real GPU host (issue #19).
+- Tests on native Windows: `test_worker_env` split `PYTHONPATH` on `:` instead of `os.pathsep`; the file-mode assertion and the four tests that run a `#!`-script fake llama.cpp harness are skipped on Windows, as they are POSIX-only (PR #32).
+
+### Changed
+
+- `AGENTS.md`: notes on using WSL2 for the engine scripts on Windows, GPU hosts, CI approval on a first PR, and reporting the `unsupported` count with a verify-upstream-fix result.
+
 ## [0.1.1] - 2026-09-26
 
 ### Fixed
