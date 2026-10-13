@@ -109,7 +109,10 @@ done
 echo "$SRC_DIR" > "$site/canitoolcall_sglang.pth"
 
 # --- smoke test ------------------------------------------------------------------
-"$PY" -W ignore - "$SRC_DIR" <<'EOF'
+# Parsing needs no GPU. With a CUDA GPU visible, torch.cuda.is_available() is true
+# and SGLang takes CUDA-only import branches (flashinfer) that this CPU-only env
+# lacks, so hide the GPUs. `canitoolcall run` does the same for the worker.
+CUDA_VISIBLE_DEVICES=-1 "$PY" -W ignore - "$SRC_DIR" <<'EOF'
 import re
 import sys
 from importlib import metadata

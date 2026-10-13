@@ -149,6 +149,11 @@ FAKE_HARNESS = textwrap.dedent(
 )
 
 
+# The fake harness is a `#!python` script that the adapter launches directly,
+# which Windows cannot do (no shebangs, no exec bit); the real harness is a POSIX build.
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="runs a #!-script directly; POSIX only")
+
+
 def _fake_harness(tmp_path: Path, replies: dict[str, Any]) -> tuple[Path, Path]:
     replies_path = tmp_path / "replies.json"
     replies_path.write_text(json.dumps(replies))
@@ -167,6 +172,7 @@ def _requests(log: Path, op: str = "replay") -> list[dict[str, Any]]:
 HELLO = {"ok": True, "protocol": 1, "commit": "a25c986", "build_info": "b1-a25c986"}
 
 
+@posix_only
 def test_harness_process(tmp_path: Path) -> None:
     script, _ = _fake_harness(tmp_path, {"hello": HELLO})
     h = Harness(script)
@@ -181,6 +187,7 @@ def test_harness_process(tmp_path: Path) -> None:
         Harness(tmp_path / "missing")
 
 
+@posix_only
 def test_version_is_checked_against_the_pin(tmp_path: Path) -> None:
     script, _ = _fake_harness(tmp_path, {"hello": HELLO})
     a = LlamaCppAdapter(harness=script, gguf_dir=tmp_path)
@@ -216,6 +223,7 @@ REPLAY_OK = {
 }
 
 
+@posix_only
 def test_parse_mapping_and_template_choice(tmp_path: Path) -> None:
     gguf_dir, src = _setup_engine_dirs(tmp_path)
     script, log = _fake_harness(
@@ -276,6 +284,7 @@ def test_parse_mapping_and_template_choice(tmp_path: Path) -> None:
     a.close()
 
 
+@posix_only
 def test_engine_errors_are_outcomes(tmp_path: Path) -> None:
     gguf_dir, src = _setup_engine_dirs(tmp_path)
     script, log = _fake_harness(

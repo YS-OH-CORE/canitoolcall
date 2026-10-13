@@ -9,8 +9,10 @@ protocol, restart logic and checks that engine runs use.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from core_corpus import OTHER_ID, SAMPLE_ID, SINGLE_ID, TRUNCATED_ID, write_corpus
@@ -352,11 +354,46 @@ def test_worker_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYTHONPATH", "/should/not/leak")
     monkeypatch.setenv("VIRTUAL_ENV", "/main/venv")
     env = worker_env({"PYTHONPATH": "/extra", "HF_HUB_OFFLINE": "1"})
-    assert env["PYTHONPATH"].split(":") == [str(core_pythonpath()), "/extra"]
+    assert env["PYTHONPATH"].split(os.pathsep) == [str(core_pythonpath()), "/extra"]
     assert env["HF_HUB_OFFLINE"] == "1"
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert "VIRTUAL_ENV" not in env
     assert (core_pythonpath() / "canitoolcall" / "__init__.py").is_file()
+
+
+def test_worker_env_hides_gpus_from_sglang_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A GPU-host default: SGLang's CUDA-only imports (flashinfer) must not be taken.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert worker_env(engine="sglang")["CUDA_VISIBLE_DEVICES"] == "-1"
+    assert "CUDA_VISIBLE_DEVICES" not in worker_env(engine="vllm")
+    assert "CUDA_VISIBLE_DEVICES" not in worker_env(engine="transformers")
+    assert "CUDA_VISIBLE_DEVICES" not in worker_env()
+    # replaces whatever the host exports (e.g. a scheduler's "0,1") ...
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert worker_env(engine="sglang")["CUDA_VISIBLE_DEVICES"] == "-1"
+    assert worker_env(engine="vllm")["CUDA_VISIBLE_DEVICES"] == "0,1"  # other engines inherit as before
+    # ... but an explicit --env wins, so a user can still opt in.
+    assert worker_env({"CUDA_VISIBLE_DEVICES": "0"}, engine="sglang")["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_worker_client_launches_with_engine_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The env the Popen really receives, not just worker_env's return value.
+    seen: dict[str, dict[str, str]] = {}
+
+    def fake_popen(cmd: list[str], **kw: Any) -> Any:
+        seen["env"] = kw["env"]
+        raise OSError("stop here")
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr("canitoolcall.runner.subprocess.Popen", fake_popen)
+    py = tmp_path / "python"
+    py.write_text("")
+    with pytest.raises(OSError, match="stop here"):
+        WorkerClient("sglang", python=py).start()
+    assert seen["env"]["CUDA_VISIBLE_DEVICES"] == "-1"
+    with pytest.raises(OSError, match="stop here"):
+        WorkerClient("sglang", python=py, env={"CUDA_VISIBLE_DEVICES": "0"}).start()
+    assert seen["env"]["CUDA_VISIBLE_DEVICES"] == "0"
 
 
 def test_duplicate_strategies_run_once(

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping
@@ -45,11 +46,18 @@ from canitoolcall.adapters.sglang import (
 from canitoolcall.chunking import DEFAULT_STRATEGIES
 from canitoolcall.fixtures import load_families, read_jsonl, repo_root
 from canitoolcall.results import ParsedToolCall, ParseResult
+from canitoolcall.runner import ENGINE_ENV_DEFAULTS
 
 ROOT = repo_root() or Path(__file__).resolve().parents[2]
 # Engine tests read tokenizers/configs from the HF cache only (DESIGN.md rule 10);
-# export HF_HUB_OFFLINE=0 once to warm the cache.
-ENGINE_ENV = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1")}
+# export HF_HUB_OFFLINE=0 once to warm the cache. The engine's CPU-only defaults
+# (CUDA_VISIBLE_DEVICES=-1) apply here as they do under `canitoolcall run`.
+ENGINE_ENV = {
+    **os.environ,
+    **ENGINE_ENV_DEFAULTS["sglang"],
+    "PYTHONPATH": str(ROOT / "src"),
+    "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE", "1"),
+}
 CACHE_MISS = ("LocalEntryNotFoundError", "OfflineModeIsEnabled", "outgoing traffic has been disabled")
 SAMPLE_DIR = ROOT / "tests" / "core" / "data" / "fixtures"
 STRATEGIES = [s.id for s in DEFAULT_STRATEGIES]
@@ -65,6 +73,12 @@ def test_registered_and_pinned() -> None:
     assert cls is SglangAdapter
     assert cls.pinned_version == "0.5.20"
     assert cls.supports_text_deltas
+
+
+def test_setup_smoke_test_hides_gpus() -> None:
+    # sglang.sh's import smoke test failed with "No module named 'flashinfer'" on a host with a visible GPU.
+    script = (ROOT / "scripts" / "engines" / "sglang.sh").read_text(encoding="utf-8")
+    assert re.search(r'^CUDA_VISIBLE_DEVICES=-1 "\$PY" ', script, re.MULTILINE)
 
 
 def test_module_does_not_import_sglang() -> None:

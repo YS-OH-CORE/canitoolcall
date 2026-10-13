@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from canitoolcall.results import (
     CaseResult,
@@ -127,6 +130,7 @@ def test_load_rejects_unknown_major(tmp_path: Path) -> None:
         RunResults.load(path)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX permission bits")
 def test_results_file_is_readable_by_others(tmp_path: Path) -> None:
     import os
 

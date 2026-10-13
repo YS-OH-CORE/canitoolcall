@@ -15,6 +15,19 @@ All notable changes to this project are documented here. The format follows
   issue and `CONTRIBUTING.md`, so a visitor landing on the published site has a
   one-click way to the code and to report a wrong cell (issue #1).
 
+### Fixed
+
+- `scripts/verify_upstream_pr.py` no longer reports "nothing regressed" for an unusable comparison: a replay that exits with anything but 0 or 1, a missing, unreadable, empty or malformed report, duplicate fixture IDs, or base and head reports with different fixture inventories now exit 3 with a diagnostic (issue #30, PR #31).
+- SGLang replay on a host with a visible CUDA GPU: `sglang.sh` failed its import smoke test with `ModuleNotFoundError: No module named 'flashinfer'`, because SGLang takes CUDA-only imports whenever torch sees a GPU. `canitoolcall run` now starts SGLang workers with `CUDA_VISIBLE_DEVICES=-1` (an explicit `--env CUDA_VISIBLE_DEVICES=...` overrides it), and `sglang.sh` hides the GPUs for its smoke test. `scripts/verify_upstream_pr.py` gains `--env KEY=VALUE`. Not yet exercised on a real GPU host (issue #19).
+- Tests on native Windows: `test_worker_env` split `PYTHONPATH` on `:` instead of `os.pathsep`; the file-mode assertion and the four tests that run a `#!`-script fake llama.cpp harness are skipped on Windows, as they are POSIX-only (PR #32).
+
+### Changed
+
+- `WISHLIST.md`: a list of wanted work with sizes and acceptance criteria that humans and agents can pick up, linked from the README, `AGENTS.md` and `llms.txt`.
+- Design records for main-branch engine columns (`docs/DESIGN-main-branch-columns.md`, issue #25) and a provider-observation pilot (`docs/DESIGN-provider-matrix.md`, issue #27). Both are proposals; neither is approved or built.
+- Triage: the nine fixtures of `vllm-stream-nonstream-other` are split into five findings (issue #10, PR #13).
+- `AGENTS.md`: notes on using WSL2 for the engine scripts on Windows, GPU hosts, CI approval on a first PR, and reporting the `unsupported` count with a verify-upstream-fix result.
+
 ## [0.1.1] - 2026-09-26
 
 ### Fixed
