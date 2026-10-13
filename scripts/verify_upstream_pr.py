@@ -162,6 +162,8 @@ def main() -> int:
                 results[side] = replay(a.engine, a.family, out, a.env)
             except RuntimeError as e:
                 print(f"replay at {side} ({sha[:9]}) failed: {e}", file=sys.stderr)
+                print("If the engine failed to import, the PR may depend on changes that are", file=sys.stderr)
+                print("not in the pinned engine.", file=sys.stderr)
                 return 3
     finally:
         for f, t in targets.items():

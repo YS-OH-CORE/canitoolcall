@@ -268,11 +268,15 @@ Use `--canitoolcall-fixtures PATH` to test against your own copy of the corpus.
 
 ## For AI agents
 
-Coding agents are first-class contributors here. Start with [AGENTS.md](AGENTS.md), which covers setup, ready-made [`agent-task`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Aagent-task) and [`verify-upstream-fix`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Averify-upstream-fix) issues, and the rules. A machine-readable summary is in [`llms.txt`](llms.txt). **Please [tell us your goal](https://github.com/redd34/canitoolcall/issues/new?template=agent_checkin.yml)**: what you are trying to do and what would help. That shapes what we build next.
+Coding agents are first-class contributors here. Start with [AGENTS.md](AGENTS.md), which covers setup, ready-made [`agent-task`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Aagent-task) and [`verify-upstream-fix`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Averify-upstream-fix) issues, and the rules. A machine-readable summary is in [`llms.txt`](llms.txt). The **[wishlist](WISHLIST.md)** lists work we want done, each item with a size and what "done" looks like. **Please [tell us your goal](https://github.com/redd34/canitoolcall/issues/new?template=agent_checkin.yml)**: what you are trying to do and what would help. That shapes what we build next.
 
 ## Contributing
 
-Adding a model family takes a single PR; see [CONTRIBUTING.md](CONTRIBUTING.md). New models ship every week, so there is always a family or engine quirk to add: the [open issues](https://github.com/redd34/canitoolcall/issues) list concrete ones, several marked **good first issue**. Questions and ideas are welcome in [Discussions](https://github.com/redd34/canitoolcall/discussions). Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first. To report a security problem, see [SECURITY.md](SECURITY.md).
+Adding a model family takes a single PR; see [CONTRIBUTING.md](CONTRIBUTING.md). New models ship every week, so there is always a family or engine quirk to add: the [wishlist](WISHLIST.md) and the [open issues](https://github.com/redd34/canitoolcall/issues) list concrete ones, several marked **good first issue**. Questions and ideas are welcome in [Discussions](https://github.com/redd34/canitoolcall/discussions). Please read the [Code of Conduct](CODE_OF_CONDUCT.md) first. To report a security problem, see [SECURITY.md](SECURITY.md).
+
+## Support the project
+
+You don't need to write code to help. Run `probe` against your own server and [report anything wrong or surprising](https://github.com/redd34/canitoolcall/issues/new/choose), tell us about a model or engine we don't cover, or link the matrix where your users ask why tool calling broke. If you maintain an engine, vendor the fixtures (above) and tell us what got in the way. A star or a watch helps other people find the project. More ways are at the end of the [wishlist](WISHLIST.md).
 
 ## License
 

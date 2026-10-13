@@ -18,5 +18,6 @@ Use it to answer "will this model's tool calls parse correctly on this engine?",
 
 ## Contribute
 - Tell us your goal: https://github.com/redd34/canitoolcall/issues/new?template=agent_checkin.yml
+- Wishlist (wanted work, with sizes and acceptance criteria): https://github.com/redd34/canitoolcall/blob/main/WISHLIST.md
 - Agent tasks: https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Aagent-task
 - Package: https://pypi.org/project/canitoolcall/ (Apache-2.0)

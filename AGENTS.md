@@ -34,6 +34,7 @@ uv run python scripts/engines/prefetch_hf.py   # tokenizer/template files only, 
 
 ## Ready-made tasks
 
+- **[WISHLIST.md](WISHLIST.md)**: everything we want done, in one place, with a size and what "done" looks like for each item. Start here if you want to pick something up.
 - **[`agent-task`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Aagent-task)**: scoped tasks with exact commands and acceptance criteria.
 - **[`verify-upstream-fix`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3Averify-upstream-fix)**: an engine opened a PR to fix a bug we reported. Check it (see below).
 - **[`good first issue`](https://github.com/redd34/canitoolcall/issues?q=is%3Aopen+label%3A%22good+first+issue%22)**: small and self-contained.
