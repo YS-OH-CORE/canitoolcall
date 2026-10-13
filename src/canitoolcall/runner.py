@@ -74,7 +74,7 @@ class RunConfig:
     """Per-message worker timeout."""
     env: Mapping[str, str] = field(default_factory=dict)
     """Extra environment for the worker (e.g. HF_HUB_OFFLINE=1). A ``PYTHONPATH``
-    entry is appended after the core package path."""
+    entry is appended after the core package path. Wins over :data:`ENGINE_ENV_DEFAULTS`."""
     tags: Sequence[str] = ()
     """Keep fixtures carrying at least one of these tags; empty -> all."""
     ids: Sequence[str] = ()
@@ -138,10 +138,23 @@ def core_pythonpath() -> Path:
         return _SHIM_DIR
 
 
-def worker_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+ENGINE_ENV_DEFAULTS: Mapping[str, Mapping[str, str]] = {
+    # Parser replay never needs a GPU. SGLang's ``is_cuda()`` is true whenever
+    # torch can see one, which switches on CUDA-only imports (flashinfer) that
+    # the CPU-only env does not have. Hiding the GPUs from the worker keeps the
+    # CPU path, even if the host already exports CUDA_VISIBLE_DEVICES. To
+    # override, pass ``--env CUDA_VISIBLE_DEVICES=...`` (it wins over this).
+    "sglang": {"CUDA_VISIBLE_DEVICES": "-1"},
+}
+"""Per-engine worker environment that replaces the inherited value; an explicit ``RunConfig.env`` wins."""
+
+
+def worker_env(extra: Mapping[str, str] | None = None, engine: str | None = None) -> dict[str, str]:
     """Environment for a worker: the current environment without Python/venv
-    overrides, the core ``PYTHONPATH`` (plus ``extra["PYTHONPATH"]``), UTF-8 I/O."""
+    overrides, the engine's :data:`ENGINE_ENV_DEFAULTS`, the core ``PYTHONPATH``
+    (plus ``extra["PYTHONPATH"]``), UTF-8 I/O."""
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
+    env.update(ENGINE_ENV_DEFAULTS.get(engine or "", {}))
     extra = dict(extra or {})
     paths = [str(core_pythonpath())]
     if extra.get("PYTHONPATH"):
@@ -220,7 +233,7 @@ class WorkerClient:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            env=worker_env(self.env),
+            env=worker_env(self.env, self.engine),
         )
         assert self._proc.stdout is not None and self._proc.stderr is not None
         threading.Thread(target=self._pump_stdout, args=(self._proc.stdout, self._lines), daemon=True).start()
@@ -605,6 +618,7 @@ def run_and_write(config: RunConfig) -> Path:
 
 
 __all__ = [
+    "ENGINE_ENV_DEFAULTS",
     "FixtureValidationError",
     "RunConfig",
     "WorkerClient",

@@ -60,9 +60,13 @@ def package_root(engine: str, package: str) -> Path:
     return Path(out)
 
 
-def replay(engine: str, families: list[str], out_dir: Path) -> dict[str, str]:
+def replay(engine: str, families: list[str], out_dir: Path, env: list[str]) -> dict[str, str]:
     cmd = ["uv", "run", "-q", "canitoolcall", "run", "--engine", engine]
     cmd += ["--env", "HF_HUB_OFFLINE=1", "--out", str(out_dir)]
+    # `canitoolcall run` gives the worker its engine's CPU-only defaults (SGLang
+    # gets CUDA_VISIBLE_DEVICES=-1); --env KEY=VALUE here overrides them.
+    for kv in env:
+        cmd += ["--env", kv]
     for fam in families:
         cmd += ["--family", fam]
     # `canitoolcall run` exits 1 when any fixture fails, which is expected here.
@@ -104,6 +108,13 @@ def main() -> int:
     ap.add_argument("--engine", required=True, choices=sorted(ENGINES))
     ap.add_argument("--pr", required=True, type=int, help="upstream pull request number")
     ap.add_argument("--family", action="append", default=[], help="fixture family to replay (repeatable; default: all)")
+    ap.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="extra worker environment, overrides defaults (repeatable)",
+    )
     ap.add_argument("--json", type=Path, help="also write the report as JSON")
     a = ap.parse_args()
 
@@ -148,7 +159,7 @@ def main() -> int:
             out = work / side
             out.mkdir()
             try:
-                results[side] = replay(a.engine, a.family, out)
+                results[side] = replay(a.engine, a.family, out, a.env)
             except RuntimeError as e:
                 print(f"replay at {side} ({sha[:9]}) failed: {e}", file=sys.stderr)
                 return 3
