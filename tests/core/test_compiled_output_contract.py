@@ -113,12 +113,13 @@ def load_cli():
 @pytest.mark.parametrize("exit_code", [0, 1, 3])
 def test_cli_dispatches_and_preserves_exit(monkeypatch, engine, exit_code):
     cli, calls = load_cli(), []
-    monkeypatch.setattr(cli.verify_compiled_pr, "verify", lambda *args: calls.append(args) or exit_code)
+    monkeypatch.setitem(sys.modules, "verify_compiled_pr", compiled)
+    monkeypatch.setattr(compiled, "verify", lambda *args: calls.append(args) or exit_code)
     monkeypatch.setattr(
         sys, "argv", ["verify", "--engine", engine, "--pr", "22", "--family", "glm", "--build-jobs", "3"]
     )
     assert cli.main() == exit_code
-    assert calls[0][1:] == (engine, 22, ["glm"], None, 3)
+    assert calls[0][1:] == (engine, 22, ["glm"], None, 3, 3600)
 
 
 @pytest.mark.parametrize(
@@ -128,12 +129,15 @@ def test_cli_dispatches_and_preserves_exit(monkeypatch, engine, exit_code):
         ["--pr", "-1"],
         ["--build-jobs", "0"],
         ["--build-jobs", "-1"],
+        ["--build-timeout", "0"],
+        ["--build-timeout", "-1"],
         ["--engine", "invalid"],
     ],
 )
 def test_invalid_cli_arguments_never_build(monkeypatch, suffix):
     cli, calls = load_cli(), []
-    monkeypatch.setattr(cli.verify_compiled_pr, "verify", lambda *args: calls.append(args))
+    monkeypatch.setitem(sys.modules, "verify_compiled_pr", compiled)
+    monkeypatch.setattr(compiled, "verify", lambda *args: calls.append(args))
     monkeypatch.setattr(sys, "argv", ["verify", "--engine", "ollama", "--pr", "22", *suffix])
     with pytest.raises(SystemExit) as exc:
         cli.main()

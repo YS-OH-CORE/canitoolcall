@@ -24,6 +24,63 @@ STATUSES = {"pass", "soft_pass", "fail", "error", "unsupported"}
 GOOD = {"pass", "soft_pass"}
 BAD = {"fail", "error"}
 
+DEFAULT_BUILD_TIMEOUT = 3600
+# Deliberately enumerate the offline replay overrides. CANITOOLCALL_API_KEY
+# belongs to live probing and must not cross the unreviewed-code boundary.
+CHILD_ENVIRONMENT_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "SYSTEMROOT",
+        "WINDIR",
+        "CC",
+        "CXX",
+        "AR",
+        "RANLIB",
+        "CFLAGS",
+        "CPPFLAGS",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "CMAKE_PREFIX_PATH",
+        "CMAKE_GENERATOR",
+        "SDKROOT",
+        "DEVELOPER_DIR",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "GOPATH",
+        "GOCACHE",
+        "GOMODCACHE",
+        "GOPROXY",
+        "GOSUMDB",
+        "GOTOOLCHAIN",
+        "GOFLAGS",
+        "GOMAXPROCS",
+        "CGO_ENABLED",
+        "UV_CACHE_DIR",
+        "CANITOOLCALL_FIXTURES",
+        "CANITOOLCALL_GGUF_DIR",
+        "CANITOOLCALL_LLAMACPP_HARNESS",
+        "CANITOOLCALL_LLAMACPP_SRC",
+        "CANITOOLCALL_LLAMACPP_TEMPLATE",
+        "CANITOOLCALL_OLLAMA_BIN_DIR",
+    }
+)
+
+
+def child_environment() -> dict[str, str]:
+    """Pass only offline build/replay inputs, not the caller's account secrets.
+
+    HOME, toolchain settings and the filesystem remain accessible. This is
+    accidental environment-disclosure prevention, not a security sandbox.
+    """
+    return {key: value for key, value in os.environ.items() if key in CHILD_ENVIRONMENT_KEYS}
+
 
 def commit_sha(value: object) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
@@ -45,14 +102,16 @@ def pinned_binaries(root: Path, engine: str) -> dict[str, str]:
     return {name: file_digest(directory / name) for name in names if (directory / name).is_file()}
 
 
-def build(root: Path, engine: str, sha: str, destination: Path, jobs: int) -> tuple[dict[str, str], dict[str, str]]:
+def build(
+    root: Path, engine: str, sha: str, destination: Path, jobs: int, timeout: int = DEFAULT_BUILD_TIMEOUT
+) -> tuple[dict[str, str], dict[str, str]]:
     """Copy trusted build recipes, not the pinned engine, into a fresh workspace."""
     commit_sha(sha)
     project = destination / "project"
     project.mkdir(parents=True, exist_ok=False)
     shutil.copytree(root / "scripts" / "engines", project / "scripts" / "engines")
     shutil.copytree(root / "harnesses" / engine, project / "harnesses" / engine)
-    env = os.environ.copy()
+    env = child_environment()
     env.update({f"{engine.upper()}_REF": sha, "JOBS": str(jobs)})
     if engine == "llamacpp":
         env["LLAMACPP_REPO"] = "https://github.com/ggml-org/llama.cpp"
@@ -60,13 +119,18 @@ def build(root: Path, engine: str, sha: str, destination: Path, jobs: int) -> tu
     if engine == "llamacpp":
         command.append("--no-vocab")
     with (destination / "build.log").open("w", encoding="utf-8") as log:
-        result = run_logged(command, cwd=project, env=env, log=log)
+        try:
+            result = run_logged(command, cwd=project, env=env, log=log, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"{engine} build timed out after {timeout} seconds; see {destination / 'build.log'}"
+            ) from exc
     if result.returncode:
         raise RuntimeError(f"{engine} build exited {result.returncode}; see {destination / 'build.log'}")
     engine_root = project / ".engines" / engine
     checkout = engine_root / ("ollama" if engine == "ollama" else "llama.cpp")
     actual = subprocess.run(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], check=True, capture_output=True, text=True, env=env
     ).stdout.strip()
     if actual != sha:
         raise RuntimeError(f"built checkout is {actual!r}, expected {sha}")
@@ -111,8 +175,6 @@ def read_cases(out: Path, exit_code: int) -> dict[str, str]:
             raise RuntimeError("missing or duplicate fixture ID")
         if not isinstance(status, str) or status not in STATUSES:
             raise RuntimeError(f"invalid status for {key!r}")
-        if status == "error" or case.get("harness_error"):
-            raise RuntimeError(f"harness failed for {key!r}; see the per-fixture result")
         cases[key] = status
     if all(status == "unsupported" for status in cases.values()):
         raise RuntimeError("no supported fixtures were replayed")
@@ -128,7 +190,7 @@ def replay(root: Path, families: list[str], destination: Path, env: dict[str, st
         command += ["--env", f"{key}={value}"]
     for family in families:
         command += ["--family", family]
-    process_env = os.environ.copy()
+    process_env = child_environment()
     process_env.update(env)
     process_env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), env["PYTHONPATH"]])
     with (destination / "replay.log").open("w", encoding="utf-8") as log:
@@ -196,9 +258,17 @@ def finish_reports(report: dict[str, object], code: int, work: Path, output: Pat
         return 3
 
 
-def verify(root: Path, engine: str, pr_number: int, families: list[str], output: Path | None, jobs: int) -> int:
-    if engine not in REPOSITORIES or pr_number <= 0 or jobs <= 0:
-        raise ValueError("expected a compiled engine, positive PR number and positive build job count")
+def verify(
+    root: Path,
+    engine: str,
+    pr_number: int,
+    families: list[str],
+    output: Path | None,
+    jobs: int,
+    build_timeout: int = DEFAULT_BUILD_TIMEOUT,
+) -> int:
+    if engine not in REPOSITORIES or pr_number <= 0 or jobs <= 0 or build_timeout <= 0:
+        raise ValueError("expected a compiled engine, positive PR number, build job count and build timeout")
     try:
         output = report_destination(root, output)
     except (OSError, ValueError) as exc:
@@ -220,7 +290,7 @@ def verify(root: Path, engine: str, pr_number: int, families: list[str], output:
         builds: dict[str, dict[str, str]] = {}
         for side, sha in (("base", base), ("head", head)):
             destination = work / side
-            overrides, builds[side] = build(root, engine, sha, destination, jobs)
+            overrides, builds[side] = build(root, engine, sha, destination, jobs, build_timeout)
             results[side] = replay(root, families, destination, overrides)
         report["binary_sha256"] = builds
         report.update(compare(results["base"], results["head"]))
@@ -246,7 +316,11 @@ def verify(root: Path, engine: str, pr_number: int, families: list[str], output:
     else:
         print(f"{repo}#{pr_number}  base {base[:9]} -> head {head[:9]}")
         print("(two isolated full-source builds; pinned harness unchanged)")
-        print(f"fixtures replayed: {report['fixtures']}   fixed: {report['fixed']}   regressed: {report['regressed']}")
+        other = len(report["changed"]) - report["fixed"] - report["regressed"]  # type: ignore[arg-type,operator]
+        print(
+            f"fixtures replayed: {report['fixtures']}   fixed: {report['fixed']}   "
+            f"regressed: {report['regressed']}   other changes: {other}"
+        )
         for key, old, new in report["changed"]:  # type: ignore[union-attr]
             print(f"  {key}: {old} -> {new}")
     print(f"verification logs: {work}", file=sys.stderr)

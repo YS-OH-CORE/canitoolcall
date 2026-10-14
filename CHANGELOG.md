@@ -8,11 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Compiled verification now bounds its own process group during build/replay cancellation or timeout, and preserves interrupted outcomes in its reports.
-
-- Compiled verifier reports use complete-file publication and explicit I/O failure receipts, preserving the comparison result without overwriting existing exports.
-
-- Compiled upstream-PR verification for Ollama and llama.cpp: isolated full base/head builds, revision-checked adapters, retained logs and fail-closed report validation.
+- Compiled upstream-PR verification for Ollama and llama.cpp: isolated full-source builds, configurable build timeouts, allowlisted child environments, revision-checked adapters, owned-process cleanup and complete-file reports. Existing pins and exports are preserved; fixture error outcomes and summary counts follow the Python verifier.
 
 - `AGENTS.md` and `llms.txt` for AI coding agents, an "Agent check-in" issue form for sharing goals and needs, and an AI-assistance field in the PR template.
 - The Pages site now also serves `llms.txt` and `AGENTS.md` at its root.

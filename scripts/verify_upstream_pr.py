@@ -32,9 +32,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-import verify_compiled_pr
-
 ROOT = Path(__file__).resolve().parent.parent
+COMPILED_ENGINES = {"ollama", "llamacpp"}
 ENGINES = {
     # engine: (GitHub repo, top-level package, path prefix of the package inside the repo)
     "vllm": ("vllm-project/vllm", "vllm", "vllm/"),
@@ -108,7 +107,7 @@ def replay(engine: str, families: list[str], out_dir: Path, env: list[str]) -> d
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--engine", required=True, choices=sorted(set(ENGINES) | set(verify_compiled_pr.REPOSITORIES)))
+    ap.add_argument("--engine", required=True, choices=sorted(set(ENGINES) | COMPILED_ENGINES))
     ap.add_argument("--pr", required=True, type=int, help="upstream pull request number")
     ap.add_argument("--family", action="append", default=[], help="fixture family to replay (repeatable; default: all)")
     ap.add_argument(
@@ -119,12 +118,40 @@ def main() -> int:
         help="extra worker environment, overrides defaults (repeatable)",
     )
     ap.add_argument("--json", type=Path, help="also write the report as JSON")
-    ap.add_argument("--build-jobs", type=int, default=2, help="parallel compiled build jobs (default: 2)")
+    ap.add_argument("--build-jobs", type=int, help="parallel compiled build jobs (default: 2)")
+    ap.add_argument(
+        "--build-timeout",
+        type=int,
+        metavar="SECONDS",
+        help="timeout for each compiled build, including its smoke test (default: 3600)",
+    )
     a = ap.parse_args()
-    if a.pr <= 0 or a.build_jobs <= 0:
-        ap.error("--pr and --build-jobs must be positive")
-    if a.engine in verify_compiled_pr.REPOSITORIES:
-        return verify_compiled_pr.verify(ROOT, a.engine, a.pr, a.family, a.json, a.build_jobs)
+    if (
+        a.pr <= 0
+        or (a.build_jobs is not None and a.build_jobs <= 0)
+        or (a.build_timeout is not None and a.build_timeout <= 0)
+    ):
+        ap.error("--pr, --build-jobs and --build-timeout must be positive")
+    if a.engine in COMPILED_ENGINES:
+        if a.env:
+            ap.error(
+                "--env is only supported for Python engines; "
+                "compiled verification uses allowlisted environment variables"
+            )
+        # Keep standalone Python-engine imports independent of compiled support.
+        import verify_compiled_pr
+
+        return verify_compiled_pr.verify(
+            ROOT,
+            a.engine,
+            a.pr,
+            a.family,
+            a.json,
+            a.build_jobs or 2,
+            a.build_timeout if a.build_timeout is not None else verify_compiled_pr.DEFAULT_BUILD_TIMEOUT,
+        )
+    if a.build_jobs is not None or a.build_timeout is not None:
+        ap.error("--build-jobs and --build-timeout are only supported for compiled engines")
 
     repo, package, prefix = ENGINES[a.engine]
     pr = gh_json(f"repos/{repo}/pulls/{a.pr}")

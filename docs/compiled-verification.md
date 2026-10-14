@@ -15,6 +15,28 @@ for the selected families first, as described by `scripts/engines/gguf_vocab.sh`
 No weights, inference server or live probe is required. Missing assets or an
 incompatible build do not establish an improvement.
 
+## Running upstream code
+
+This command **compiles and executes upstream pull-request code**, including
+build-time smoke tests. Read the source first and use a disposable, low-privilege
+container or VM without personal credentials for code you do not trust.
+Temporary build directories and process-group cleanup are not a security sandbox.
+
+The parent uses GitHub CLI authentication only to read PR metadata. Build, smoke
+and replay children receive an allowlisted environment: PATH/HOME, locale and
+temporary-directory settings, named compiler/CMake/macOS/Go settings, UV_CACHE_DIR,
+and the known offline CANITOOLCALL fixture, vocabulary and compiled-adapter paths.
+The exact list is `CHILD_ENVIRONMENT_KEYS` in `verify_compiled_pr.py`. It excludes
+GH_TOKEN, GITHUB_TOKEN, HF_TOKEN, CANITOOLCALL_API_KEY and unrelated variables;
+it does not permit every variable merely because it starts with CANITOOLCALL_.
+The per-side revision and binary paths override inherited values.
+
+HOME, PATH, allowed toolchain settings and files on disk remain accessible.
+An allowed value can itself contain sensitive data. Filtering the environment
+does not block malicious code from reading files or using the network. Arbitrary
+`--env` forwarding is Python-engine-only and is rejected on the compiled route,
+rather than silently ignored or used to bypass the allowlist.
+
 ## Isolation and source identity
 
 Each side receives a new temporary project containing the trusted build
@@ -31,6 +53,11 @@ engine for other work. Parser provenance uses the side's declared revision.
 The usual vocabulary directory is read by both sides, or use the existing
 `CANITOOLCALL_GGUF_DIR` override. No worker venv is created by either isolated
 build. Compilation defaults to two parallel jobs; `--build-jobs` is explicit.
+`--build-timeout SECONDS` sets a positive time limit for each side's complete
+build command, including its smoke test; the default is 3600 seconds (one hour).
+Replay retains its separate 900-second limit. A timed-out build reports its
+engine, elapsed budget and build-log path, and returns exit 3 after cleanup.
+`--build-jobs` and `--build-timeout` are rejected for Python engines.
 The builders accept full SHA overrides through `OLLAMA_REF` and `LLAMACPP_REF`,
 while their defaults stay at the original pins.
 
@@ -50,9 +77,18 @@ The hashes distinguish an absent pre-existing build from a preserved one.
 
 Exit 0 means no regression in a complete, comparable replay; exit 1 means a
 previously passing fixture failed; exit 3 means no reliable comparison was
-obtained. Missing, malformed or duplicate case records, changed coverage,
-harness errors and build failures return 3 instead of a misleading success.
-The same statuses and changed-fixture shape as the existing verifier are used.
+obtained. Missing, malformed or duplicate case records and build failures return
+3 instead of a misleading success. A valid per-fixture `error` (including a
+recorded `harness_error`) is retained, just as on the Python path: error-to-pass
+is a fix, pass-to-error a regression, and a pre-existing error alone does not
+invalidate the comparison. The summary includes the same `other changes` count.
+
+Two stricter coverage checks are intentional: an all-unsupported compiled
+replay, or a fixture switching between supported and unsupported, returns 3.
+No compiled parser behavior was exercised in the former case; changed support
+cannot establish a like-for-like revision comparison in the latter. The Python
+path retains its existing policy. Likewise, compiled `--json` refuses to replace
+an existing export; the Python path's existing overwrite behavior is unchanged.
 
 Reports are completely written in a temporary file in the destination directory
 before publication. The optional export uses a no-clobber hard link, requiring
